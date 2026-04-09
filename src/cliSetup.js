@@ -446,6 +446,15 @@ function shouldSkipBootstrapCacheRefresh(argv = []) {
   return command === 'init';
 }
 
+function isConfigExemptCommand(argv = []) {
+  const [command] = argv;
+  return !command || ['init', 'config', '--help', '-h', '--version', '-V'].includes(command);
+}
+
+function showMissingConfigInitMessage() {
+  console.error(chalk.red('错误: 配置文件不存在，运行 qcc init 进行初始化'));
+}
+
 async function createProgram(argv = process.argv.slice(2)) {
   const program = new Command();
 
@@ -454,6 +463,12 @@ async function createProgram(argv = process.argv.slice(2)) {
     .description('企业信息查询 CLI 工具')
     .version(version)
     .allowUnknownOption(true); // 允许未知选项，由默认处理器处理
+
+  const configIntegrity = configService.checkConfigIntegrity();
+  if (!configIntegrity.exists && !isConfigExemptCommand(argv)) {
+    showMissingConfigInitMessage();
+    process.exit(1);
+  }
 
   // 场景1: 无配置文件 → 提示用户初始化（不刷新缓存）
   if (!configService.isMcpConfigValid()) {
