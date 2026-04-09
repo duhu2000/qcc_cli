@@ -1,6 +1,6 @@
 {
   "name": "qcc-agent-cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "企查查智能体数据平台 CLI 工具",
   "main": "bin/index.js",
   "bin": {
