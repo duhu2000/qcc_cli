@@ -14,7 +14,7 @@
 
 **核心能力**：
 - 🎯 **6 大服务域**：企业信息、风险信息、经营信息、知识产权、历史信息、董监高
-- 🔧 **146 个查询工具**：覆盖工商、董监高、历史沿革、专利商标、经营动态、司法风险等场景
+- 🔧 **179 个查询工具**：覆盖工商、董监高、历史沿革、专利商标、经营动态、司法风险等场景
 - 🤖 **AI Agent 友好**：Markdown 格式化输出、Schema 自省、参数自动验证
 - 🔒 **安全可控**：配置隔离、敏感信息脱敏
 
@@ -62,9 +62,9 @@
 | 服务标识 | 服务名称 | 工具数 | 典型场景 | 文档 |
 | :---: | :---: | :---: | :--- | :--- |
 | `company` | 企业信息 | 15 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
-| `risk` | 风险信息 | 34 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
-| `operation` | 经营信息 | 14 | 经营动态、资质许可、融资、舆情与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
-| `ipr` | 知识产权 | 7 | 商标、专利、软著、作品著作权与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
+| `risk` | 风险信息 | 35 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
+| `operation` | 经营信息 | 35 | 经营动态、资质许可、融资、舆情、监管与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
+| `ipr` | 知识产权 | 18 | 商标、专利、软著、应用产品、社媒账号与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
 | `history` | 历史信息 | 34 | 历史沿革追溯、历史风险回溯、历史股权与司法记录核查 | [查看文档](./docs/query-manual/history.md) |
 | `executive` | 董监高 | 42 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
 
@@ -131,7 +131,7 @@ qcc company get_company_registration_info "企查查科技股份有限公司"
 ### 数据查询调用
 
 ```bash
-qcc <server> <tool> --<paramKey> "<paramValue>"
+qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 ```
 
 -----
@@ -141,26 +141,28 @@ qcc <server> <tool> --<paramKey> "<paramValue>"
 ### 调用格式
 
 ```bash
-qcc <server> <tool> --<paramKey> "<paramValue>"
+qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 ```
 
 **参数说明：**
 - `server`：服务标识（`company` / `risk` / `operation` / `ipr` / `history` / `executive`）
 - `tool`：工具名称，可通过 `qcc list-tools <server>` 获取
-- `--paramKey`：参数键，如 `--searchKey`、`--personName`
-- `paramValue`：参数值，如企业名称、统一社会信用代码或人员姓名
+- `--paramKey`：参数键，如 `--searchKey`、`--personName`、`--year`、`--role`
+- `paramValue`：参数值，如企业名称、统一社会信用代码、人员姓名、年份、日期或状态过滤值
 
 **通用参数：**
 - `--json`：输出原始 JSON 格式（默认输出 Markdown 格式化结果）
+- 可选过滤参数按工具 schema 追加；CLI 会按工具 schema 自动转换数字、布尔值和数组。
+- 数组类型参数可传单个值，例如 `--role "原告"`；多个值请重复传入同一选项，例如 `--role "原告" --role "被告"`。
 
 ### 服务文档
 
 | 服务标识 | 服务名称 | 工具数 | 典型场景 | 文档 |
 | :---: | :---: | :---: | :--- | :--- |
 | `company` | 企业信息 | 15 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
-| `risk` | 风险信息 | 34 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
-| `operation` | 经营信息 | 14 | 经营动态、资质许可、融资、舆情与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
-| `ipr` | 知识产权 | 7 | 商标、专利、软著、作品著作权与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
+| `risk` | 风险信息 | 35 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
+| `operation` | 经营信息 | 35 | 经营动态、资质许可、融资、舆情、监管与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
+| `ipr` | 知识产权 | 18 | 商标、专利、软著、应用产品、社媒账号与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
 | `history` | 历史信息 | 34 | 历史沿革追溯、历史风险回溯、历史股权与司法记录核查 | [查看文档](./docs/query-manual/history.md) |
 | `executive` | 董监高 | 42 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
 

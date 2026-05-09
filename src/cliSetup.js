@@ -21,6 +21,7 @@ const {
   getCachedTools,
   getCachedToolsWithFallback
 } = require('./utils/cacheUtils');
+const { buildToolCommandExample, getArrayParamHint } = require('./utils/commandExample');
 
 function getServerTools(serverName) {
   return getServerToolsFromCache(serverName);
@@ -76,6 +77,61 @@ function printToolUsageHints(serverName) {
   console.log(chalk.yellow('或运行 "qcc update" 更新工具列表'));
 }
 
+function getRootHelpText() {
+  const shortServerNames = mcpService.getShortServerNames();
+  const serviceList = shortServerNames.join(' / ');
+
+  return `
+查询调用:
+  qcc <server> <tool> "<默认参数值>"
+  qcc <server> <tool> --<参数名> "<参数值>" [--<参数名> "<参数值>" ...]
+  qcc <server> <tool> --json --<参数名> "<参数值>"
+  数组参数可传单个值；多个值请重复传入同一选项，例如 --role "原告" --role "被告"
+
+常用命令:
+  qcc list-tools
+  qcc list-tools <server>
+  qcc <server> <tool> --help
+
+服务标识:
+  ${serviceList}
+
+示例:
+  qcc company get_company_registration_info "企查查科技股份有限公司"
+  qcc company verify_company_accuracy --searchKey "企查查科技股份有限公司" --name "法定代表人姓名"
+  qcc risk get_court_notice --searchKey "企查查科技股份有限公司" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year 2026
+`;
+}
+
+function getSchemaType(propDef = {}) {
+  const type = propDef.type;
+  if (Array.isArray(type)) {
+    return type.find((item) => item !== 'null');
+  }
+  return type;
+}
+
+function appendParamValue(params, key, value) {
+  if (Object.prototype.hasOwnProperty.call(params, key)) {
+    params[key] = Array.isArray(params[key])
+      ? [...params[key], value]
+      : [params[key], value];
+    return;
+  }
+
+  params[key] = value;
+}
+
+function collectRepeatableOptionValue(value, previous) {
+  const values = Array.isArray(previous)
+    ? previous
+    : previous === undefined
+      ? []
+      : [previous];
+
+  return [...values, value];
+}
+
 function parseToolInvocationArgs(tool, argv = []) {
   const params = {};
   let json = false;
@@ -93,12 +149,18 @@ function parseToolInvocationArgs(tool, argv = []) {
     }
 
     if (token.startsWith('--')) {
+      const equalsIndex = token.indexOf('=');
+      if (equalsIndex > 2) {
+        appendParamValue(params, token.slice(2, equalsIndex), token.slice(equalsIndex + 1));
+        continue;
+      }
+
       const key = token.slice(2);
       const nextToken = argv[i + 1];
-      if (!nextToken || nextToken.startsWith('--')) {
-        params[key] = true;
+      if (nextToken === undefined || nextToken.startsWith('--')) {
+        appendParamValue(params, key, true);
       } else {
-        params[key] = nextToken;
+        appendParamValue(params, key, nextToken);
         i += 1;
       }
       continue;
@@ -118,6 +180,77 @@ function parseToolInvocationArgs(tool, argv = []) {
   }
 
   return { params, json };
+}
+
+function getCliOptionParamName(token) {
+  if (!token || !token.startsWith('-')) {
+    return null;
+  }
+
+  const normalized = token.startsWith('--') ? token.slice(2) : token.slice(1);
+  const equalsIndex = normalized.indexOf('=');
+  return equalsIndex >= 0 ? normalized.slice(0, equalsIndex) : normalized;
+}
+
+function getToolExampleParamsFromArgv(tool, argv = []) {
+  const props = tool.inputSchema?.properties || {};
+  const params = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    const key = getCliOptionParamName(token);
+
+    if (!key || key === 'json' || !Object.prototype.hasOwnProperty.call(props, key)) {
+      continue;
+    }
+
+    const equalsIndex = token.indexOf('=');
+    if (equalsIndex > 0) {
+      appendParamValue(params, key, token.slice(equalsIndex + 1));
+      continue;
+    }
+
+    const nextToken = argv[i + 1];
+    appendParamValue(params, key, nextToken !== undefined && !nextToken.startsWith('-') ? nextToken : undefined);
+  }
+
+  return params;
+}
+
+function printToolCommandHelp(serverName, tool, userParams = {}) {
+  const props = tool.inputSchema?.properties || {};
+  const required = tool.inputSchema?.required || [];
+  const example = buildToolCommandExample(serverName, tool.name, tool, userParams);
+  const arrayHint = getArrayParamHint(tool, userParams);
+
+  console.log(chalk.yellow('\n正确调用示例:'));
+  console.log(chalk.gray(`  ${example}`));
+  if (arrayHint) {
+    console.log(chalk.gray(`  ${arrayHint}`));
+  }
+
+  console.log(chalk.yellow(`\n工具 ${tool.name} 参数说明:`));
+  Object.entries(props).forEach(([key, value]) => {
+    const isRequired = required.includes(key);
+    const reqMark = isRequired ? '(必填)' : '(可选)';
+    console.log(chalk.gray(`  --${key} ${reqMark} ${value.description || ''}`));
+  });
+}
+
+function getToolCommandExampleHelpText(serverName, tool) {
+  const example = buildToolCommandExample(serverName, tool.name, tool);
+  const arrayHint = getArrayParamHint(tool);
+  const lines = [
+    '',
+    '调用示例:',
+    `  ${example}`
+  ];
+
+  if (arrayHint) {
+    lines.push(`  ${arrayHint}`);
+  }
+
+  return `${lines.join('\n')}\n`;
 }
 
 function withStrictOptionValidation(command) {
@@ -362,6 +495,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
       const toolCmd = serverCmd
         .command(tool.name)
         .description(tool.description || '')
+        .addHelpText('after', () => getToolCommandExampleHelpText(shortName, tool))
         .configureOutput({
           writeErr: () => {}
         })
@@ -369,21 +503,16 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
           if (err.code === 'commander.unknownOption') {
             const option = err.message.match(/'([^']+)'/)?.[1] || err.message;
             console.error(`错误: 未知选项 ${option}`);
-            console.log(`\n工具 ${tool.name} 参数说明:`);
-            const toolProps = tool.inputSchema?.properties || {};
-            const toolRequired = tool.inputSchema?.required || [];
-            Object.entries(toolProps).forEach(([key, value]) => {
-              const isRequired = toolRequired.includes(key);
-              const reqMark = isRequired ? '(必填)' : '(可选)';
-              console.log(`  --${key} ${reqMark} ${value.description || ''}`);
-            });
+            const userParams = getToolExampleParamsFromArgv(tool, process.argv.slice(4));
+            printToolCommandHelp(shortName, tool, userParams);
             process.exit(1);
           }
 
           if (err.code === 'commander.optionMissingArgument') {
             const option = err.message.match(/'([^']+)'/)?.[1] || '参数';
             console.error(`错误: 选项 ${option} 缺少值`);
-            console.log('\n使用 --help 查看参数说明');
+            const userParams = getToolExampleParamsFromArgv(tool, process.argv.slice(4));
+            printToolCommandHelp(shortName, tool, userParams);
             process.exit(1);
           }
 
@@ -400,19 +529,23 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         const desc = isRequired
           ? `${value.description || ''} (必填)`
           : `${value.description || ''} (可选)`;
-        toolCmd.option(flag, desc);
+        if (getSchemaType(value) === 'array') {
+          toolCmd.option(flag, desc, collectRepeatableOptionValue);
+        } else {
+          toolCmd.option(flag, desc);
+        }
       });
 
       const defaultParamKey = props.searchKey ? 'searchKey' : required[0];
       if (defaultParamKey) {
-        toolCmd.argument('[positionalArg]', `默认参数，映射到 --${defaultParamKey}`);
+        toolCmd.argument('[defaultValue]', `默认参数，映射到 --${defaultParamKey}`);
       }
 
-      toolCmd.action(async (positionalArg, options) => {
+      toolCmd.action(async (defaultValue, options) => {
         const { json, ...params } = options;
 
-        if (defaultParamKey && positionalArg !== undefined && !params[defaultParamKey]) {
-          params[defaultParamKey] = positionalArg;
+        if (defaultParamKey && defaultValue !== undefined && !params[defaultParamKey]) {
+          params[defaultParamKey] = defaultValue;
         }
 
         await callMcpCommand(shortName, tool.name, params, { json });
@@ -421,14 +554,15 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
   });
 }
 
-function registerDefaultHandler(program) {
+function registerDefaultHandler(program, argv = process.argv.slice(2)) {
   const shortServerNames = mcpService.getShortServerNames();
 
   program
-    .argument('[arg1]')
-    .argument('[arg2]')
-    .argument('[positionalArg]', '搜索关键词')
-    .action(async (arg1, arg2, positionalArg) => {
+    .argument('[serviceToolArgs...]')
+    .action(async (serviceToolArgs = []) => {
+      const invocationArgs = argv.length > serviceToolArgs.length ? argv : serviceToolArgs;
+      const [arg1, arg2, ...toolArgs] = invocationArgs;
+
       const serverConfig = mcpService.getServerByShortName(arg1);
 
       if (serverConfig) {
@@ -455,15 +589,15 @@ function registerDefaultHandler(program) {
         const required = tool.inputSchema?.required || [];
         const defaultParamKey = props.searchKey ? 'searchKey' : required[0];
 
-        if (positionalArg) {
-          const params = defaultParamKey ? { [defaultParamKey]: positionalArg } : {};
-          await callMcpCommand(arg1, arg2, params, {});
+        if (toolArgs.length > 0) {
+          const invocation = parseToolInvocationArgs(tool, toolArgs);
+          await callMcpCommand(arg1, arg2, invocation.params, { json: invocation.json });
           return;
         }
 
         console.error('错误: 请提供工具参数');
-        console.log(`\n用法: qcc ${arg1} ${arg2} <参数值>`);
-        console.log(`      qcc ${arg1} ${arg2} --<参数名> <参数值>`);
+        console.log(`\n用法: qcc ${arg1} ${arg2} "<默认参数值>"`);
+        console.log(`      qcc ${arg1} ${arg2} --<参数名> <参数值> [--<参数名> <参数值> ...]`);
         console.log('\n参数说明:');
         Object.entries(props).forEach(([key, value]) => {
           const req = required.includes(key) ? '(必填)' : '(可选)';
@@ -532,7 +666,7 @@ function handleInvalidToolInvocation(argv = [], useFallback = false) {
 
 function shouldSkipBootstrapCacheRefresh(argv = []) {
   const [command] = argv;
-  return command === 'init';
+  return !command || ['init', '--help', '-h', '--version', '-V'].includes(command);
 }
 
 function getRequestedServiceForInvocation(argv = []) {
@@ -563,8 +697,10 @@ async function createProgram(argv = process.argv.slice(2)) {
   program
     .name('qcc')
     .description('企业信息查询 CLI 工具')
+    .usage('[options] [command|service] [tool] [args...]')
     .version(version)
-    .allowUnknownOption(true);
+    .allowUnknownOption(true)
+    .addHelpText('after', getRootHelpText);
 
   const configIntegrity = configService.checkConfigIntegrity();
   if (!configIntegrity.exists && !isConfigExemptCommand(argv)) {
@@ -575,7 +711,7 @@ async function createProgram(argv = process.argv.slice(2)) {
   if (!configService.isMcpConfigValid()) {
     registerStaticCommands(program);
     registerMcpCommands(program);
-    registerDefaultHandler(program);
+    registerDefaultHandler(program, argv);
     setupGlobalErrorHandler(program);
     return program;
   }
@@ -631,7 +767,7 @@ async function createProgram(argv = process.argv.slice(2)) {
 
   registerStaticCommands(program);
   registerMcpCommands(program, useFallback, authFailed);
-  registerDefaultHandler(program);
+  registerDefaultHandler(program, argv);
   setupGlobalErrorHandler(program);
   handleInvalidToolInvocation(argv, useFallback);
 

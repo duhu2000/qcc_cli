@@ -5,6 +5,7 @@ const { QccError } = require('../utils/httpClient');
 const { jsonToMarkdown } = require('../utils/jsonToMarkdown');
 const validator = require('../utils/validator');
 const configService = require('../services/configService');
+const { buildToolCommandExample, getArrayParamHint } = require('../utils/commandExample');
 
 function printJsonRpcError(result) {
   console.error(chalk.red(`  code: ${result.error?.code ?? '-'}`));
@@ -67,13 +68,21 @@ async function callMcp(serverName, toolName, params, options = {}) {
     return;
   }
 
-  const validation = validator.validateMcpTool(tool, params);
+  const validation = validator.validateMcpTool(tool, params, { coerceTypes: true, checkType: true });
   if (!validation.valid) {
     console.error(chalk.red('错误: 参数校验失败'));
     validation.errors.forEach((err) => console.error(chalk.red(`  - ${err}`)));
 
     const props = tool.inputSchema?.properties || {};
     const required = tool.inputSchema?.required || [];
+    const example = buildToolCommandExample(serverName, toolName, tool, params);
+    const arrayHint = getArrayParamHint(tool, params);
+
+    console.log(chalk.yellow('\n正确调用示例:'));
+    console.log(chalk.gray(`  ${example}`));
+    if (arrayHint) {
+      console.log(chalk.gray(`  ${arrayHint}`));
+    }
 
     console.log(chalk.yellow('\n工具参数说明:'));
     Object.entries(props).forEach(([key, value]) => {
