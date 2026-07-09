@@ -12,6 +12,7 @@ const initCommand = require('./commands/init');
 const checkCommand = require('./commands/check');
 const callMcpCommand = require('./commands/call-mcp');
 const configCommand = require('./commands/config');
+const idpCommand = require('./commands/idp');
 const { updateTools } = require('./commands/update');
 const configService = require('./services/configService');
 const mcpService = require('./services/mcpService');
@@ -78,7 +79,7 @@ function printToolUsageHints(serverName) {
 }
 
 function getRootHelpText() {
-  const shortServerNames = mcpService.getShortServerNames();
+  const shortServerNames = [...mcpService.getShortServerNames(), 'document'];
   const serviceList = shortServerNames.join(' / ');
 
   return `
@@ -92,6 +93,9 @@ function getRootHelpText() {
   qcc list-tools
   qcc list-tools <server>
   qcc <server> <tool> --help
+  qcc document parse_document --file_path <path> [--wait]
+  qcc document parse_document --file_url <http-url> [--wait]
+  qcc document get_parse_result <task_id>
 
 服务标识:
   ${serviceList}
@@ -100,6 +104,9 @@ function getRootHelpText() {
   qcc company get_company_registration_info "企查查科技股份有限公司"
   qcc company verify_company_accuracy --searchKey "企查查科技股份有限公司" --name "法定代表人姓名"
   qcc risk get_court_notice --searchKey "企查查科技股份有限公司" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year 2026
+  qcc document parse_document --file_path "./sample.pdf"
+  qcc document parse_document --file_url "https://files.example.com/sample.pdf" --wait
+  qcc document get_parse_result "qcc_task_id"
 `;
 }
 
@@ -173,7 +180,7 @@ function parseToolInvocationArgs(tool, argv = []) {
 
   const props = tool.inputSchema?.properties || {};
   const required = tool.inputSchema?.required || [];
-  const defaultParamKey = props.searchKey ? 'searchKey' : required[0];
+  const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
 
   if (defaultParamKey && positionalArg !== undefined && !params[defaultParamKey]) {
     params[defaultParamKey] = positionalArg;
@@ -296,6 +303,37 @@ function registerStaticCommands(program) {
       .description('显示 MCP 工具列表')
       .action((serverName) => {
         listToolsCommand.listTools(serverName);
+      })
+  );
+
+  const idpCmd = withStrictOptionValidation(
+    program
+      .command('document')
+      .description('文档解析任务提交与结果查询')
+      .action(() => {
+        idpCmd.outputHelp();
+        process.exit(1);
+      })
+  );
+
+  withStrictOptionValidation(
+    idpCmd
+      .command('parse_document')
+      .description('提交本地文件路径或 HTTP(S) 文档 URL 创建解析任务')
+      .option('--file_path <path>', '要解析的本地文件路径，可填写绝对路径或相对当前进程的路径；不要填写 URL、目录、通配符、base64、文件流或文件内容')
+      .option('--file_url <url>', '要解析的文档 URL，必须以 http:// 或 https:// 开头；不要填写本地文件路径、base64、文件流、文件内容或已下载文件')
+      .option('--wait', '是否尝试等待解析完成；默认 false；true 时若解析已完成会直接返回 details[].result_md，若仍在处理中则返回 processing')
+      .action(async (options) => {
+        await idpCommand.parseDocument(options);
+      })
+  );
+
+  withStrictOptionValidation(
+    idpCmd
+      .command('get_parse_result <task_id>')
+      .description('使用 parse_document 返回的 task_id 查询解析任务状态和结果')
+      .action(async (taskId) => {
+        await idpCommand.getParseResult(taskId);
       })
   );
 
@@ -536,13 +574,15 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         }
       });
 
-      const defaultParamKey = props.searchKey ? 'searchKey' : required[0];
+      const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
       if (defaultParamKey) {
         toolCmd.argument('[defaultValue]', `默认参数，映射到 --${defaultParamKey}`);
       }
 
-      toolCmd.action(async (defaultValue, options) => {
-        const { json, ...params } = options;
+      toolCmd.action(async (...actionArgs) => {
+        const command = actionArgs[actionArgs.length - 1];
+        const defaultValue = defaultParamKey ? actionArgs[0] : undefined;
+        const { json, ...params } = command.opts();
 
         if (defaultParamKey && defaultValue !== undefined && !params[defaultParamKey]) {
           params[defaultParamKey] = defaultValue;
@@ -587,7 +627,7 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
 
         const props = tool.inputSchema?.properties || {};
         const required = tool.inputSchema?.required || [];
-        const defaultParamKey = props.searchKey ? 'searchKey' : required[0];
+        const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
 
         if (toolArgs.length > 0) {
           const invocation = parseToolInvocationArgs(tool, toolArgs);
@@ -614,6 +654,7 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
         console.log('  qcc list-tools    显示 MCP 工具列表');
         console.log('  qcc update        更新工具信息缓存');
         console.log('  qcc config        配置管理');
+        console.log('  qcc document           文档解析任务提交与结果查询');
         console.log('\nMCP 服务:');
         shortServerNames.forEach((name) => {
           const cfg = mcpService.getServerByShortName(name);
@@ -666,7 +707,7 @@ function handleInvalidToolInvocation(argv = [], useFallback = false) {
 
 function shouldSkipBootstrapCacheRefresh(argv = []) {
   const [command] = argv;
-  return !command || ['init', '--help', '-h', '--version', '-V'].includes(command);
+  return !command || ['init', 'document', '--help', '-h', '--version', '-V'].includes(command);
 }
 
 function getRequestedServiceForInvocation(argv = []) {
@@ -684,7 +725,7 @@ function getRequestedServiceForInvocation(argv = []) {
 
 function isConfigExemptCommand(argv = []) {
   const [command] = argv;
-  return !command || ['init', 'config', '--help', '-h', '--version', '-V'].includes(command);
+  return !command || ['init', 'config', 'document', '--help', '-h', '--version', '-V'].includes(command);
 }
 
 function showMissingConfigInitMessage() {
@@ -784,6 +825,7 @@ function setupGlobalErrorHandler(program) {
     console.log('  qcc update        更新工具信息缓存');
     console.log('  qcc check         检查配置状态');
     console.log('  qcc config        配置管理');
+    console.log('  qcc document           文档解析任务提交与结果查询');
     console.log('\nMCP 服务:');
     const shortServerNames = mcpService.getShortServerNames();
     shortServerNames.forEach((name) => {

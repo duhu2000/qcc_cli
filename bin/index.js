@@ -3,8 +3,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const updateNotifierModule = require('update-notifier');
-const updateNotifier = updateNotifierModule.default || updateNotifierModule;
 const pkg = require('../package.json');
 const { createProgram } = require('../src/cliSetup');
 
@@ -15,12 +13,23 @@ const updateConfigPath = path.join(
 );
 const isFirstUpdateCheck = !fs.existsSync(updateConfigPath);
 
-updateNotifier({
-  pkg,
-  updateCheckInterval: isFirstUpdateCheck ? 0 : 1000 * 60 * 60 * 12
-}).notify({ isGlobal: true });
+async function notifyUpdateIfAvailable() {
+  try {
+    const updateNotifierModule = await import('update-notifier');
+    const updateNotifier = updateNotifierModule.default || updateNotifierModule;
+
+    updateNotifier({
+      pkg,
+      updateCheckInterval: isFirstUpdateCheck ? 0 : 1000 * 60 * 60 * 12
+    }).notify({ isGlobal: true });
+  } catch {
+    // Update checks are best-effort and must not block CLI startup.
+  }
+}
 
 async function main() {
+  await notifyUpdateIfAvailable();
+
   const program = await createProgram(process.argv.slice(2));
 
   program.exitOverride((err) => {

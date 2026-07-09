@@ -134,6 +134,36 @@ qcc company get_company_registration_info "企查查科技股份有限公司"
 qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 ```
 
+### 文档解析任务提交与结果查询
+
+提供专用 `document` 命令，用于提交本地文件或 HTTP(S) 文档 URL 创建解析任务，并根据 `task_id` 查询解析状态和 Markdown 结果。命令默认输出 JSON，便于脚本和 Agent 继续处理。
+
+```bash
+# 本地文件异步提交
+qcc document parse_document --file_path "./sample.pdf"
+
+# 本地文件同步等待 Markdown 结果
+qcc document parse_document --file_path "./sample.pdf" --wait
+
+# URL 文件异步提交
+qcc document parse_document --file_url "https://files.example.com/sample.pdf"
+
+# URL 文件同步等待 Markdown 结果
+qcc document parse_document --file_url "https://files.example.com/sample.doc" --wait
+
+
+# 查询任务结果
+qcc document get_parse_result "<task_id>"
+```
+
+`parse_document` 当前仅支持 `--file_path`、`--file_url`、`--wait` 三个参数。`--file_path <path>` 与 `--file_url <url>` 必须二选一且只能提供一个：本地文件会从当前机器读取并提交解析，URL 文件会直接按 URL 提交；CLI 不会为 URL 文件做下载或探测。
+
+`--wait` 是布尔开关，不传时创建异步任务并返回 `task_id`；传入时会尝试等待解析完成，若已完成可直接返回 `details[].result_md`，若仍在处理中则继续使用 `get_parse_result` 查询。当前版本暂不支持 `--start_page_id`、`--end_page_id` 指定页码范围；传入会作为无效参数处理。
+
+`document` 命令复用 `qcc init` 写入的全局配置和鉴权信息，不需要单独配置文档解析地址或凭证。未初始化或凭证不可用时，请先运行 `qcc init` 或 `qcc check`。
+
+当前 CLI 只支持单文件解析；不支持多文件、base64、直接传文件内容、callback、计费控制、`check_params`、`full_json`、`title_tree` 或完整 result 控制项。文件类型、大小、页数等业务规则以服务端校验结果为准。
+
 -----
 
 ## 📚 查询指令手册
@@ -176,9 +206,9 @@ qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 
 ### 字段解析
 
-* `mcp.baseUrl`: MCP API 服务的基础路径。
-* `mcp.authorization`: 访问凭证，输出时会自动脱敏。
-* `mcp.timeout`: 请求超时时间（毫秒）。
+* `mcp.baseUrl`: MCP API 服务基础路径，`document` 文档解析命令也复用该地址。
+* `mcp.authorization`: MCP 与 `document` 文档解析共用访问凭证，输出时会自动脱敏。
+* `mcp.timeout`: 通用请求超时时间（毫秒）；`document` 的 `parse_document` 提交阶段固定为 300 秒，`get_parse_result` 仍使用该值。
 * `mcp.enabled`: 是否启用 MCP 模式（默认 `true`）。
 
 ### 配置命令

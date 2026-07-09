@@ -28,5 +28,15 @@
     "name": "董监高",
     "description": "企业董监高任职、历史变更、关联任职与治理结构洞察服务。",
     "endpoint": "/executive/stream"
+  },
+  "qcc-legal-regulation": {
+    "name": "法律法规",
+    "description": "全量现行法律、行政法规、司法解释，法规级到法条级逐字正文，标注时效与修订沿革，法名支持俗称归一。",
+    "endpoint": "/regulation/stream"
+  },
+  "qcc-legal-case": {
+    "name": "司法案例",
+    "description": "海量普通裁判文书 + 2.5 万条权威案例（指导性 / 公报 / 典型），按争议焦点与裁判观点聚类，正反向观点一目了然。",
+    "endpoint": "/case/stream"
   }
 }

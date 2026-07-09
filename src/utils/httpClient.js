@@ -36,6 +36,9 @@ class QccError extends Error {
     this.code = options.code || -1;
     this.recoverable = options.recoverable || false;
     this.suggestion = options.suggestion || '';
+    if (options.details !== undefined) {
+      this.details = options.details;
+    }
   }
 }
 
