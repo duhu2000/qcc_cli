@@ -17,7 +17,7 @@ const {
 const { detectLocalFileEncryption } = require('../utils/idpDocumentEncryption');
 
 const IDP_PARSE_ENDPOINT = '/idp/parse_document';
-const IDP_UPLOAD_FILE_ENDPOINT = '/idp/upload_file';
+const IDP_CREATE_UPLOAD_URL_ENDPOINT = '/idp/create_upload_url';
 const LOCAL_ENCRYPTION_PRECHECK_TYPES = new Set([
   'pdf',
   'png',
@@ -92,10 +92,6 @@ function buildEndpoint(baseUrl, path) {
 
 function isIdpEnvelope(data) {
   return data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'status');
-}
-
-function isFailedIdpEnvelope(data) {
-  return isIdpEnvelope(data) && data.status === 'failed';
 }
 
 function normalizeHttpResponse(response) {
@@ -290,26 +286,31 @@ function buildGatewayJsonOptions(remoteConfig) {
     headers: {
       Authorization: remoteConfig.authorization,
       Accept: 'application/json',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      source: packageMetadata.name,
+      'source-version': packageMetadata.version
     },
     timeout: DEFAULT_PARSE_DOCUMENT_TIMEOUT_MS,
     validateStatus: () => true
   };
 }
 
-
-function buildRawUploadRequestConfig(file, remoteConfig, fileStream) {
+function selectUploadHeaders(headers) {
   return {
-    url: buildEndpoint(remoteConfig.baseUrl, IDP_UPLOAD_FILE_ENDPOINT),
-    headers: {
-      Authorization: remoteConfig.authorization,
-      Accept: 'application/json',
-      'Content-Type': file.content_type,
-      'Content-Length': String(file.file_size),
-      'X-QCC-File-Name': encodeURIComponent(file.file_name),
-      source: packageMetadata.name,
-      'source-version': packageMetadata.version
-    },
+    'Content-Type': headers['Content-Type'],
+    'Content-Length': headers['Content-Length'],
+    'QCC-Upload-Source': headers['QCC-Upload-Source'],
+    ...(headers['QCC-Upload-Version'] === undefined
+      ? {}
+      : { 'QCC-Upload-Version': headers['QCC-Upload-Version'] })
+  };
+}
+
+function buildRawUploadRequestConfig(upload, fileStream) {
+  return {
+    url: upload.upload_url,
+    method: upload.method,
+    headers: selectUploadHeaders(upload.headers),
     fileStream,
     totalTimeoutMs: DEFAULT_UPLOAD_TOTAL_TIMEOUT_MS,
     connectTimeoutMs: DEFAULT_UPLOAD_CONNECT_TIMEOUT_MS,
@@ -332,9 +333,7 @@ function createUploadTimeoutError(message) {
 function isUploadTransportTimeoutError(error) {
   const message = error && error.message ? String(error.message) : String(error);
   const code = error && error.code ? String(error.code) : '';
-  return /socket hang up|premature close|request aborted|response aborted|request destroyed|response destroyed|aborted/i.test(message)
-    || code === 'ECONNRESET'
-    || code === 'EPIPE'
+  return /timed?\s*out|timeout|超时/i.test(message)
     || code === 'ETIMEDOUT'
     || code === 'ECONNABORTED';
 }
@@ -377,6 +376,7 @@ function createRawUploadClient(options = {}) {
     return new Promise((resolve, reject) => {
       const {
         url,
+        method = 'PUT',
         headers,
         fileStream,
         totalTimeoutMs = DEFAULT_UPLOAD_TOTAL_TIMEOUT_MS,
@@ -387,6 +387,7 @@ function createRawUploadClient(options = {}) {
       } = config;
 
       let settled = false;
+      let requestFinished = false;
       let connected = false;
       let request = null;
       let response = null;
@@ -424,7 +425,7 @@ function createRawUploadClient(options = {}) {
         totalTimer = null;
       }
 
-      function cleanup() {
+      function cleanup({ preserveErrorListeners = false } = {}) {
         clearConnectTimer();
         clearUploadIdleTimer();
         clearResponseWaitTimer();
@@ -437,38 +438,51 @@ function createRawUploadClient(options = {}) {
 
         if (request) {
           request.removeListener('drain', handleRequestDrain);
-          request.removeListener('error', handleRequestError);
-          request.removeListener('finish', startResponseWaitTimer);
+          if (!preserveErrorListeners && !request.destroyed) {
+            request.removeListener('error', handleRequestError);
+          }
+          request.removeListener('finish', handleRequestFinish);
         }
 
         if (response) {
           response.removeListener('data', handleResponseData);
-          response.removeListener('error', handleResponseError);
+          if (!preserveErrorListeners) {
+            response.removeListener('error', handleResponseError);
+          }
           response.removeListener('end', finalizeResponse);
         }
 
         fileStream.removeListener('data', handleFileChunk);
         fileStream.removeListener('end', finalizeUploadBody);
-        fileStream.removeListener('error', handleFileError);
+        if (!preserveErrorListeners) {
+          fileStream.removeListener('error', handleFileError);
+        }
       }
 
-      function settleFailure(error) {
+      function safeDestroy(resource) {
+        if (!resource || resource.destroyed || typeof resource.destroy !== 'function') {
+          return;
+        }
+
+        try {
+          resource.destroy();
+        } catch {
+          // Promise rejection is the upload failure channel; teardown errors must not crash the CLI.
+        }
+      }
+
+      function settleSuccess(result, stopIncompleteRequest = false) {
         if (settled) {
           return;
         }
 
         settled = true;
-        cleanup();
-        reject(error);
-      }
-
-      function settleSuccess(result) {
-        if (settled) {
-          return;
+        cleanup({ preserveErrorListeners: stopIncompleteRequest });
+        if (stopIncompleteRequest) {
+          clearUploadIdleTimer();
+          safeDestroy(fileStream);
+          safeDestroy(request);
         }
-
-        settled = true;
-        cleanup();
         resolve(result);
       }
 
@@ -477,19 +491,12 @@ function createRawUploadClient(options = {}) {
           return;
         }
 
-        if (response && !response.destroyed && typeof response.destroy === 'function') {
-          response.destroy(error);
-        }
-
-        if (request && !request.destroyed && typeof request.destroy === 'function') {
-          request.destroy(error);
-        }
-
-        if (!fileStream.destroyed) {
-          fileStream.destroy(error);
-        }
-
-        settleFailure(error);
+        settled = true;
+        cleanup({ preserveErrorListeners: true });
+        safeDestroy(response);
+        safeDestroy(request);
+        safeDestroy(fileStream);
+        reject(error);
       }
 
       function resetUploadIdleTimer() {
@@ -526,6 +533,9 @@ function createRawUploadClient(options = {}) {
       }
 
       function finalizeUploadBody() {
+        if (settled) {
+          return;
+        }
         clearUploadIdleTimer();
         request.end();
       }
@@ -536,6 +546,15 @@ function createRawUploadClient(options = {}) {
 
       function handleRequestError(error) {
         abortUpload(error);
+      }
+
+      function handleRequestClose() {
+        request.removeListener('error', handleRequestError);
+      }
+
+      function handleRequestFinish() {
+        requestFinished = true;
+        startResponseWaitTimer();
       }
 
       function handleResponseError(error) {
@@ -573,7 +592,7 @@ function createRawUploadClient(options = {}) {
           status: response.statusCode || 0,
           data: normalizeUploadResponseBody(Buffer.concat(responseChunks, responseBytes)),
           headers: response.headers
-        });
+        }, !requestFinished);
       }
 
       function handleRequestDrain() {
@@ -587,7 +606,7 @@ function createRawUploadClient(options = {}) {
         const parsedUploadUrl = new URL(url);
         const uploadAgent = parsedUploadUrl.protocol === 'https:' ? uploadHttpsAgent : uploadHttpAgent;
         request = requestFactory(url, {
-          method: 'POST',
+          method,
           headers,
           agent: uploadAgent
         }, (incomingResponse) => {
@@ -597,10 +616,7 @@ function createRawUploadClient(options = {}) {
           response.once('end', finalizeResponse);
         });
       } catch (error) {
-        if (!fileStream.destroyed) {
-          fileStream.destroy(error);
-        }
-        settleFailure(error);
+        abortUpload(error);
         return;
       }
 
@@ -618,8 +634,9 @@ function createRawUploadClient(options = {}) {
         }
       });
       request.on('drain', handleRequestDrain);
-      request.once('finish', startResponseWaitTimer);
+      request.once('finish', handleRequestFinish);
       request.once('error', handleRequestError);
+      request.once('close', handleRequestClose);
 
       if (connectTimeoutMs > 0) {
         connectTimer = setTimeout(() => {
@@ -640,36 +657,15 @@ function createRawUploadClient(options = {}) {
   };
 }
 
-function normalizeUploadFileResponse(response) {
-  let data;
-
-  if (isFailedIdpEnvelope(response.data)) {
-    data = normalizeHttpResponse(response);
-    if (data?.status === 'failed') {
-      if (response.status === 504 && Number(data.error?.code) === 100219) {
-        throw createUploadTimeoutError(data.error?.description || '文档上传总超时');
-      }
-      throw new QccError(ErrorType.MCP_ERROR, data.error?.description || data.message || '文档提交未完成', {
-        code: data.error?.code,
-        suggestion: data.error?.explanation || '请稍后再试。'
-      });
-    }
-  } else {
-    if (response.status === 504) {
-      throw createUploadTimeoutError('文档上传总超时');
-    }
-
-    data = normalizeHttpResponse(response);
-    if (data?.status === 'failed') {
-      throw new QccError(ErrorType.MCP_ERROR, data.error?.description || data.message || '文档提交未完成', {
-        code: data.error?.code,
-        suggestion: data.error?.explanation || '请稍后再试。'
-      });
-    }
+function normalizeCreateUploadUrlResponse(response) {
+  const data = normalizeHttpResponse(response);
+  if (isIdpEnvelope(data)) {
+    return data;
   }
 
-  if (!data?.upload_file_id || typeof data.upload_file_id !== 'string' || !data.upload_file_id.trim()) {
+  if (!isCreateUploadUrlResponse(data)) {
     throw new QccError(ErrorType.MCP_ERROR, IDP_UPLOAD_RESPONSE_INVALID_MESSAGE, {
+      code: 400204,
       suggestion: IDP_SERVICE_RESPONSE_INVALID_SUGGESTION
     });
   }
@@ -677,7 +673,43 @@ function normalizeUploadFileResponse(response) {
   return data;
 }
 
-async function uploadLocalFileToGateway(file, remoteConfig, rawUploadClient) {
+function normalizeUploadServiceResponse(response, upload) {
+  const errorCode = mapUploadServiceStatus(response.status);
+  if (errorCode) {
+    const description = getIdpErrorDescription(errorCode);
+    throw new QccError(ErrorType.MCP_ERROR, description, {
+      code: errorCode,
+      suggestion: getIdpErrorExplanation(errorCode, description, description)
+    });
+  }
+
+  return upload;
+}
+
+function isCreateUploadUrlResponse(value) {
+  return value && typeof value === 'object' &&
+    typeof value.upload_url === 'string' && value.upload_url.trim() &&
+    typeof value.upload_file_id === 'string' && value.upload_file_id.trim() &&
+    value.method === 'PUT' &&
+    Number.isSafeInteger(value.expires_in) && value.expires_in > 0 &&
+    value.headers && typeof value.headers === 'object' &&
+    typeof value.headers['Content-Type'] === 'string' &&
+    typeof value.headers['Content-Length'] === 'string' &&
+    typeof value.headers['QCC-Upload-Source'] === 'string' &&
+    (value.headers['QCC-Upload-Version'] === undefined || typeof value.headers['QCC-Upload-Version'] === 'string');
+}
+
+function mapUploadServiceStatus(status) {
+  if (status === 204) return null;
+  if (status === 400) return 100220;
+  if ([403, 408, 502, 503, 504].includes(status)) return 100219;
+  if (status === 413) return 100205;
+  if (status === 429) return 100221;
+  if (status === 500 || status >= 500) return 400299;
+  return 400204;
+}
+
+async function uploadLocalFileToGateway(file, remoteConfig, httpClient, rawUploadClient) {
   if (activeLocalUploads >= 1) {
     throw new QccError(ErrorType.MCP_ERROR, '文档提交频繁', {
       code: 100218,
@@ -686,25 +718,43 @@ async function uploadLocalFileToGateway(file, remoteConfig, rawUploadClient) {
   }
 
   activeLocalUploads += 1;
-  const fileStream = fs.createReadStream(file.file_path);
+  let fileStream;
 
   try {
-    const response = await rawUploadClient(buildRawUploadRequestConfig(file, remoteConfig, fileStream));
-    return normalizeUploadFileResponse(response);
+    const createResponse = await httpClient.post(
+      buildEndpoint(remoteConfig.baseUrl, IDP_CREATE_UPLOAD_URL_ENDPOINT),
+      {
+        file_name: file.file_name,
+        file_size: file.file_size,
+        content_type: file.content_type
+      },
+      buildGatewayJsonOptions(remoteConfig)
+    );
+    const upload = normalizeCreateUploadUrlResponse(createResponse);
+    if (isIdpEnvelope(upload)) {
+      return upload;
+    }
+
+    fileStream = fs.createReadStream(file.file_path);
+    const uploadResponse = await rawUploadClient(buildRawUploadRequestConfig(upload, fileStream));
+    return normalizeUploadServiceResponse(uploadResponse, upload);
   } catch (error) {
+    if (error instanceof QccError) {
+      throw error;
+    }
     if (isUploadTransportTimeoutError(error)) {
       throw createUploadTimeoutError('文档上传连接中断');
     }
-    throw error;
+    const description = getIdpErrorDescription(400299);
+    throw createCliIdpError(400299, description);
   } finally {
-    if (!fileStream.destroyed) {
+    if (fileStream && !fileStream.destroyed) {
       fileStream.destroy();
     }
 
     activeLocalUploads -= 1;
   }
 }
-
 function redactSignedUrlQuery(value) {
   return String(value || '').replace(/(https?:\/\/[^\s?#'"<>]+)\?[^\s'"<>]*/g, '$1?[已省略签名参数]');
 }
@@ -768,7 +818,10 @@ async function parseDocument(payload, options = {}) {
         }
       }
 
-      const upload = await uploadLocalFileToGateway(localFile, remoteConfig, rawUploadClient);
+      const upload = await uploadLocalFileToGateway(localFile, remoteConfig, httpClient, rawUploadClient);
+      if (isIdpEnvelope(upload)) {
+        return upload;
+      }
       delete parsePayload.file_url;
       parsePayload.upload_file_id = upload.upload_file_id.trim();
     }

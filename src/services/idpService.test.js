@@ -1,6 +1,7 @@
 /* eslint-env jest */
 
 const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
 const packageMetadata = require('../../package.json');
 
 const {
@@ -20,7 +21,7 @@ const IDP_SERVICE_FAILURE_SUGGESTION = '请检查网络连接和授权配置，�
 
 function expectNoInternalUploadTroubleshootingText(error) {
   const publicText = String(error.message || '') + '\n' + String(error.suggestion || '');
-  expect(publicText).not.toMatch(/gateway|\/idp\/upload_file|upload_file_id/i);
+  expect(publicText).not.toMatch(/gateway|upload_file_id/i);
 }
 
 function buildLocalFilePayload() {
@@ -37,6 +38,24 @@ function buildLocalFilePayload() {
   };
 }
 
+function buildCreateUploadResponse(overrides = {}) {
+  return {
+    upload_url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
+    upload_file_id: 'qcc_upload_1',
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Length': '1',
+      'QCC-Upload-Source': packageMetadata.name,
+      'QCC-Upload-Version': packageMetadata.version,
+      Authorization: 'Bearer MUST_NOT_LEAK',
+      Cookie: 'session=MUST_NOT_LEAK',
+      'X-Trace-Id': 'trace-only'
+    },
+    expires_in: 300,
+    ...overrides
+  };
+}
 function createNotEncryptedDetector() {
   return {
     detectLocalFileEncryption: jest.fn().mockResolvedValue({
@@ -190,26 +209,19 @@ describe('idp service configuration', () => {
     }, null)).toThrow('MCP 配置不完整');
   });
 
-  test('parseDocument uploads local file to Gateway then posts JSON parse_document', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValue({
-      status: 200,
-      data: {
-        upload_file_id: 'qcc_upload_1',
-        expires_in: 300,
-        file_name: 'idpService.test.js',
-        file_size: 1,
-        content_type: 'application/pdf'
-      }
-    });
+  test('parseDocument requests an upload URL, streams PUT, then posts JSON parse_document', async () => {
+    const rawUploadClient = jest.fn().mockResolvedValue({ status: 204, data: null });
     const httpClient = {
-      post: jest.fn().mockResolvedValue({
-        status: 200,
-        data: {
-          task_id: 'qcc_idp_1',
-          status: 'pending',
-          next_action: 'get_parse_result'
-        }
-      })
+      post: jest.fn()
+        .mockResolvedValueOnce({ status: 200, data: buildCreateUploadResponse() })
+        .mockResolvedValueOnce({
+          status: 200,
+          data: {
+            task_id: 'qcc_idp_1',
+            status: 'pending',
+            next_action: 'get_parse_result'
+          }
+        })
     };
 
     const result = await parseDocument({
@@ -234,17 +246,33 @@ describe('idp service configuration', () => {
       message: PROCESSING_MESSAGE,
       next_action: 'get_parse_result'
     });
+    expect(httpClient.post).toHaveBeenNthCalledWith(
+      1,
+      'http://localhost:8401/idp/create_upload_url',
+      {
+        file_name: 'idpService.test.js',
+        file_size: 1,
+        content_type: 'application/pdf'
+      },
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer TOKEN',
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          source: packageMetadata.name,
+          'source-version': packageMetadata.version
+        })
+      })
+    );
     expect(rawUploadClient).toHaveBeenCalledWith(expect.objectContaining({
-      url: 'http://localhost:8401/idp/upload_file',
-      headers: expect.objectContaining({
-        Authorization: 'Bearer TOKEN',
-        Accept: 'application/json',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
+      method: 'PUT',
+      headers: {
         'Content-Type': 'application/pdf',
         'Content-Length': '1',
-        'X-QCC-File-Name': encodeURIComponent('idpService.test.js'),
-        source: packageMetadata.name,
-        'source-version': packageMetadata.version
-      }),
+        'QCC-Upload-Source': packageMetadata.name,
+        'QCC-Upload-Version': packageMetadata.version
+      },
       totalTimeoutMs: 300000,
       connectTimeoutMs: 30000,
       uploadIdleTimeoutMs: 10000,
@@ -255,37 +283,43 @@ describe('idp service configuration', () => {
     const uploadedStream = rawUploadClient.mock.calls[0][0].fileStream;
     expect(uploadedStream.path).toBe(__filename);
     expect(uploadedStream.destroyed).toBe(true);
-    expect(httpClient.post).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).toHaveBeenNthCalledWith(1, 'http://localhost:8401/idp/parse_document', {
-      upload_file_id: 'qcc_upload_1',
-      wait: true,
-      start_page_id: 0,
-      end_page_id: 2
-    }, expect.objectContaining({
-      timeout: 300000
-    }));
+    expect(httpClient.post).toHaveBeenNthCalledWith(
+      2,
+      'http://localhost:8401/idp/parse_document',
+      {
+        upload_file_id: 'qcc_upload_1',
+        wait: true,
+        start_page_id: 0,
+        end_page_id: 2
+      },
+      expect.objectContaining({ timeout: 300000 })
+    );
   });
 
   test('parseDocument preserves unsupported local file type semantics by skipping encryption precheck', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 200,
-      data: {
-        upload_file_id: 'qcc_upload_zip_1'
-      }
-    });
+    const rawUploadClient = jest.fn().mockResolvedValue({ status: 204, data: null });
     const httpClient = {
-      post: jest.fn().mockResolvedValueOnce({
-        status: 200,
-        data: {
-          task_id: null,
-          status: 'failed',
-          error: {
-            code: 100207,
-            description: '暂不支持 ZIP',
-            explanation: '当前不支持 ZIP 压缩包，请上传解压后的支持格式文件。'
+      post: jest.fn()
+        .mockResolvedValueOnce({ status: 200, data: buildCreateUploadResponse({
+          upload_file_id: 'qcc_upload_zip_1',
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Length': '1',
+            'QCC-Upload-Source': packageMetadata.name
           }
-        }
-      })
+        }) })
+        .mockResolvedValueOnce({
+          status: 200,
+          data: {
+            task_id: null,
+            status: 'failed',
+            error: {
+              code: 100207,
+              description: '暂不支持 ZIP',
+              explanation: '当前不支持 ZIP 压缩包，请上传解压后的支持格式文件。'
+            }
+          }
+        })
     };
     const encryptionDetector = {
       detectLocalFileEncryption: jest.fn(() => {
@@ -313,12 +347,10 @@ describe('idp service configuration', () => {
 
     expect(encryptionDetector.detectLocalFileEncryption).not.toHaveBeenCalled();
     expect(rawUploadClient).toHaveBeenCalledWith(expect.objectContaining({
-      headers: expect.objectContaining({
-        'Content-Type': 'application/zip',
-        'X-QCC-File-Name': encodeURIComponent('archive.zip')
-      })
+      headers: expect.objectContaining({ 'Content-Type': 'application/zip' })
     }));
-    expect(httpClient.post).toHaveBeenCalledWith(
+    expect(httpClient.post).toHaveBeenNthCalledWith(
+      2,
       'http://localhost:8401/idp/parse_document',
       { upload_file_id: 'qcc_upload_zip_1' },
       expect.anything()
@@ -329,7 +361,6 @@ describe('idp service configuration', () => {
       error: expect.objectContaining({ code: 100207 })
     });
   });
-
   test('raw upload connect timeout is cleared only by a socket connection event', async () => {
     const harness = createRawUploadHarness();
     const uploadStream = createFakeFileStream();
@@ -337,7 +368,7 @@ describe('idp service configuration', () => {
     socket.connecting = true;
 
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: {
         Authorization: 'Bearer TOKEN'
       },
@@ -372,7 +403,7 @@ describe('idp service configuration', () => {
     socket.connecting = true;
 
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: {
         Authorization: 'Bearer TOKEN'
       },
@@ -406,7 +437,7 @@ describe('idp service configuration', () => {
     socket.connecting = true;
 
     const uploadPromise = harness.rawUploadClient({
-      url: 'https://localhost:8401/idp/upload_file',
+      url: 'https://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: {
         Authorization: 'Bearer TOKEN'
       },
@@ -439,7 +470,7 @@ describe('idp service configuration', () => {
     const uploadStream = createFakeFileStream();
 
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: {
         Authorization: 'Bearer TOKEN'
       },
@@ -462,11 +493,74 @@ describe('idp service configuration', () => {
     expect(uploadStream.destroyed).toBe(true);
   });
 
+  test('raw upload timeout does not emit a second error from the destroyed file stream', async () => {
+    const harness = createRawUploadHarness();
+    const uploadStream = new PassThrough();
+    const streamErrors = [];
+    uploadStream.on('error', (error) => streamErrors.push(error));
+
+    const uploadPromise = harness.rawUploadClient({
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Length': '1',
+        'QCC-Upload-Source': packageMetadata.name
+      },
+      fileStream: uploadStream,
+      totalTimeoutMs: 20,
+      connectTimeoutMs: 500,
+      uploadIdleTimeoutMs: 500,
+      responseWaitTimeoutMs: 500,
+      maxResponseBytes: 65536
+    });
+
+    await expect(uploadPromise).rejects.toMatchObject({
+      type: 'TIMEOUT',
+      code: 100219,
+      message: '文档上传总超时'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(uploadStream.destroyed).toBe(true);
+    expect(streamErrors).toEqual([]);
+  });
+
+  test('raw upload request setup failure closes the file stream without emitting a second error', async () => {
+    const requestError = new Error('request setup failed');
+    const rawUploadClient = createRawUploadClient({
+      requestFactory: () => {
+        throw requestError;
+      }
+    });
+    const uploadStream = new PassThrough();
+    const streamErrors = [];
+    uploadStream.on('error', (error) => streamErrors.push(error));
+
+    await expect(rawUploadClient({
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Length': '1',
+        'QCC-Upload-Source': packageMetadata.name
+      },
+      fileStream: uploadStream,
+      totalTimeoutMs: 500,
+      connectTimeoutMs: 500,
+      uploadIdleTimeoutMs: 500,
+      responseWaitTimeoutMs: 500,
+      maxResponseBytes: 65536
+    })).rejects.toBe(requestError);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(uploadStream.destroyed).toBe(true);
+    expect(streamErrors).toEqual([]);
+
+  });
   test('raw upload maps HTTP 504 response read limit to upload timeout', async () => {
     const harness = createRawUploadHarness();
     const uploadStream = createFakeFileStream();
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: { Authorization: 'Bearer TOKEN' },
       fileStream: uploadStream,
       totalTimeoutMs: 500,
@@ -495,7 +589,7 @@ describe('idp service configuration', () => {
     const harness = createRawUploadHarness();
     const uploadStream = createFakeFileStream();
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: { Authorization: 'Bearer TOKEN' },
       fileStream: uploadStream,
       totalTimeoutMs: 500,
@@ -529,12 +623,44 @@ describe('idp service configuration', () => {
     expectNoInternalUploadTroubleshootingText(error);
   });
 
+  test('raw upload closes the request and file stream when the service responds before body completion', async () => {
+    const harness = createRawUploadHarness();
+    const uploadStream = createFakeFileStream();
+    const uploadPromise = harness.rawUploadClient({
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Length': '10',
+        'QCC-Upload-Source': packageMetadata.name
+      },
+      fileStream: uploadStream,
+      totalTimeoutMs: 500,
+      connectTimeoutMs: 500,
+      uploadIdleTimeoutMs: 500,
+      responseWaitTimeoutMs: 500,
+      maxResponseBytes: 65536
+    });
+
+    uploadStream.emit('data', Buffer.from('partial'));
+    const response = new EventEmitter();
+    response.statusCode = 403;
+    response.headers = {};
+    harness.getResponseHandler()(response);
+    response.emit('end');
+
+    await expect(uploadPromise).resolves.toMatchObject({ status: 403 });
+    expect(harness.request.destroy).toHaveBeenCalledTimes(1);
+    expect(uploadStream.destroy).toHaveBeenCalledTimes(1);
+    expect(harness.request.end).not.toHaveBeenCalled();
+    expect(() => harness.request.emit('error', new Error('late request error'))).not.toThrow();
+  });
+
   test('raw upload request uses an upload-specific non-keepalive agent', async () => {
     const harness = createRawUploadHarness();
     const uploadStream = createFakeFileStream();
 
     const uploadPromise = harness.rawUploadClient({
-      url: 'http://localhost:8401/idp/upload_file',
+      url: 'http://upload.example/v1/uploads/qcc_upload_1?token=opaque',
       headers: {
         Authorization: 'Bearer TOKEN'
       },
@@ -557,7 +683,7 @@ describe('idp service configuration', () => {
     await uploadPromise;
   });
 
-  test('parseDocument rejects encrypted local files before upload_file is called', async () => {
+  test('parseDocument rejects encrypted local files before direct upload is called', async () => {
     const rawUploadClient = jest.fn();
     const httpClient = {
       post: jest.fn()
@@ -600,7 +726,7 @@ describe('idp service configuration', () => {
     expect(httpClient.post).not.toHaveBeenCalled();
   });
 
-  test('parseDocument rejects unknown local encryption state before upload_file is called', async () => {
+  test('parseDocument rejects unknown local encryption state before direct upload is called', async () => {
     const rawUploadClient = jest.fn();
     const httpClient = {
       post: jest.fn()
@@ -643,23 +769,126 @@ describe('idp service configuration', () => {
     expect(httpClient.post).not.toHaveBeenCalled();
   });
 
-  test('parseDocument stops before parse request when upload_file returns submit protection envelope', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 429,
-      data: {
-        task_id: null,
-        status: 'failed',
-        message: '文档提交频繁，文档提交较为频繁，已触发提交保护，本次请求暂未提交。请稍后再试。',
-        error: {
-          code: 100218,
-          description: '文档提交频繁',
-          explanation: '文档提交较为频繁，已触发提交保护，本次请求暂未提交。请稍后再试。',
-          details: { reason: 'user_submit_protection' }
-        }
-      }
-    });
+  test('parseDocument returns create_upload_url failed envelopes without uploading', async () => {
+    const rawUploadClient = jest.fn();
     const httpClient = {
-      post: jest.fn()
+      post: jest.fn().mockResolvedValue({
+        status: 200,
+        data: {
+          task_id: null,
+          status: 'failed',
+          message: '文档提交频繁',
+          error: {
+            code: 100218,
+            description: '文档提交频繁',
+            explanation: '文档提交较为频繁，已触发提交保护，本次请求暂未提交。请稍后再试。',
+            details: { reason: 'user_submit_protection' }
+          }
+        }
+      })
+    };
+
+    const result = await parseDocument(buildLocalFilePayload(), {
+      remoteConfig: {
+        baseUrl: 'http://localhost:8401',
+        authorization: 'Bearer TOKEN',
+        timeout: 1234
+      },
+      httpClient,
+      rawUploadClient,
+      encryptionDetector: createNotEncryptedDetector()
+    });
+
+    expect(result).toMatchObject({
+      task_id: null,
+      status: 'failed',
+      error: expect.objectContaining({ code: 100218 })
+    });
+    expect(rawUploadClient).not.toHaveBeenCalled();
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    [400, 100220],
+    [403, 100219],
+    [408, 100219],
+    [413, 100205],
+    [429, 100221],
+    [500, 400299],
+    [501, 400299],
+    [502, 100219],
+    [503, 100219],
+    [504, 100219],
+    [418, 400204]
+  ])('parseDocument maps direct uploader HTTP %s to public code %s', async (status, expectedCode) => {
+    const rawUploadClient = jest.fn().mockResolvedValue({ status, data: {} });
+    const httpClient = {
+      post: jest.fn().mockResolvedValue({ status: 200, data: buildCreateUploadResponse() })
+    };
+
+    await expect(parseDocument(buildLocalFilePayload(), {
+      remoteConfig: {
+        baseUrl: 'http://localhost:8401',
+        authorization: 'Bearer TOKEN',
+        timeout: 1234
+      },
+      httpClient,
+      rawUploadClient,
+      encryptionDetector: createNotEncryptedDetector()
+    })).rejects.toMatchObject({
+      type: 'MCP_ERROR',
+      code: expectedCode
+    });
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    expect(rawUploadClient).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['timeout', 'ETIMEDOUT', 100219, 'TIMEOUT'],
+    ['dns failure', 'ENOTFOUND', 400299, 'MCP_ERROR'],
+    ['connection refused', 'ECONNREFUSED', 400299, 'MCP_ERROR'],
+    ['connection reset', 'ECONNRESET', 400299, 'MCP_ERROR'],
+    ['TLS failure', 'ERR_TLS_CERT_ALTNAME_INVALID', 400299, 'MCP_ERROR']
+  ])('parseDocument maps direct uploader %s without retry', async (_caseName, errorCode, expectedCode, expectedType) => {
+    const transportError = Object.assign(new Error('low-level upload transport failure'), { code: errorCode });
+    const rawUploadClient = jest.fn().mockRejectedValue(transportError);
+    const httpClient = {
+      post: jest.fn().mockResolvedValue({ status: 200, data: buildCreateUploadResponse() })
+    };
+
+    let error;
+    try {
+      await parseDocument(buildLocalFilePayload(), {
+        remoteConfig: {
+          baseUrl: 'http://localhost:8401',
+          authorization: 'Bearer TOKEN',
+          timeout: 1234
+        },
+        httpClient,
+        rawUploadClient,
+        encryptionDetector: createNotEncryptedDetector()
+      });
+    } catch (caughtError) {
+      error = caughtError;
+    }
+
+    expect(error).toMatchObject({ type: expectedType, code: expectedCode });
+    expect(String(error.message)).not.toContain('low-level upload transport failure');
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    expect(rawUploadClient).toHaveBeenCalledTimes(1);
+  });
+
+  test('parseDocument rejects malformed create_upload_url responses', async () => {
+    const rawUploadClient = jest.fn();
+    const httpClient = {
+      post: jest.fn().mockResolvedValue({
+        status: 200,
+        data: {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/pdf' },
+          expires_in: 300
+        }
+      })
     };
 
     let error;
@@ -680,23 +909,22 @@ describe('idp service configuration', () => {
 
     expect(error).toMatchObject({
       type: 'MCP_ERROR',
-      code: 100218,
-      suggestion: '文档提交较为频繁，已触发提交保护，本次请求暂未提交。请稍后再试。'
+      code: 400204,
+      message: UPLOAD_RESPONSE_INVALID_MESSAGE
     });
-    expect(error.message).toBe('文档提交频繁');
-    expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
+    expect(rawUploadClient).not.toHaveBeenCalled();
   });
 
-  test('parseDocument stops before parse request when upload_file fails with HTTP error', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValue({
-      status: 413,
-      data: {
-        message: '文件超过大小限制'
-      }
+  test('parseDocument destroys the file stream when direct upload rejects', async () => {
+    let uploadStream = null;
+    const rawUploadClient = jest.fn(async ({ fileStream }) => {
+      uploadStream = fileStream;
+      const error = new Error('low-level DNS failure');
+      error.code = 'ENOTFOUND';
+      throw error;
     });
     const httpClient = {
-      post: jest.fn()
+      post: jest.fn().mockResolvedValue({ status: 200, data: buildCreateUploadResponse() })
     };
 
     await expect(parseDocument(buildLocalFilePayload(), {
@@ -705,63 +933,6 @@ describe('idp service configuration', () => {
         authorization: 'Bearer TOKEN',
         timeout: 1234
       },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'MCP_ERROR',
-      message: '文件超过大小限制',
-      code: 413
-    });
-    expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
-  test.each([
-    ['empty body', null],
-    ['non-json text', 'Gateway timeout'],
-    ['non-envelope object', { message: 'Gateway timeout' }],
-    ['unknown status object', { status: 'unknown' }]
-  ])('parseDocument maps upload_file HTTP 504 %s to timeout', async (_name, data) => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({ status: 504, data });
-    const httpClient = { post: jest.fn() };
-
-    await expect(parseDocument({
-      files: [{ file_path: __filename, file_type: 'pdf', start_page_id: 0, end_page_id: 0, wait: true }]
-    }, {
-      remoteConfig: { baseUrl: 'http://localhost:8401', authorization: 'Bearer TOKEN', timeout: 1234 },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'TIMEOUT',
-      code: 100219
-    });
-
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
-  test('parseDocument preserves upload_file HTTP 504 failed envelope when it is not timeout code', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 504,
-      data: {
-        task_id: null,
-        status: 'failed',
-        message: '服务内部异常，文档提交暂未完成，请稍后再试。',
-        error: {
-          code: 400299,
-          description: '服务内部异常',
-          explanation: '文档提交暂未完成，请稍后再试。',
-          details: { reason: 'idp_upload_file_failed' }
-        }
-      }
-    });
-    const httpClient = { post: jest.fn() };
-
-    await expect(parseDocument({
-      files: [{ file_path: __filename, file_type: 'pdf', start_page_id: 0, end_page_id: 0, wait: true }]
-    }, {
-      remoteConfig: { baseUrl: 'http://localhost:8401', authorization: 'Bearer TOKEN', timeout: 1234 },
       httpClient,
       rawUploadClient,
       encryptionDetector: createNotEncryptedDetector()
@@ -769,175 +940,10 @@ describe('idp service configuration', () => {
       type: 'MCP_ERROR',
       code: 400299
     });
-
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-  test.each([
-    [429, null, 429],
-    [401, 'unauthorized', 401],
-    [403, { message: 'forbidden' }, 403],
-    [400, { message: 'bad request' }, 400],
-    [500, null, 500]
-  ])('parseDocument does not map upload_file HTTP %s bad response to timeout', async (status, data, expectedCode) => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({ status, data });
-    const httpClient = { post: jest.fn() };
-
-    await expect(parseDocument({
-      files: [{ file_path: __filename, file_type: 'pdf', start_page_id: 0, end_page_id: 0, wait: true }]
-    }, {
-      remoteConfig: { baseUrl: 'http://localhost:8401', authorization: 'Bearer TOKEN', timeout: 1234 },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'MCP_ERROR',
-      code: expectedCode
-    });
-
-    await expect(parseDocument({
-      files: [{ file_path: __filename, file_type: 'pdf', start_page_id: 0, end_page_id: 0, wait: true }]
-    }, {
-      remoteConfig: { baseUrl: 'http://localhost:8401', authorization: 'Bearer TOKEN', timeout: 1234 },
-      httpClient,
-      rawUploadClient: jest.fn().mockResolvedValueOnce({ status, data }),
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.not.toMatchObject({ code: 100219 });
-
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
-  test('parseDocument destroys the file stream when upload_file rejects before parse request', async () => {
-    let uploadStream = null;
-    const rawUploadClient = jest.fn(async ({ fileStream }) => {
-      uploadStream = fileStream;
-      throw new Error('socket hang up');
-    });
-
-    const httpClient = {
-      post: jest.fn()
-    };
-
-    await expect(parseDocument(buildLocalFilePayload(), {
-      remoteConfig: {
-        baseUrl: 'http://localhost:8401',
-        authorization: 'Bearer TOKEN',
-        timeout: 1234
-      },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'TIMEOUT',
-      code: 100219
-    });
     expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
     expect(uploadStream.destroyed).toBe(true);
   });
-
-  test('parseDocument rejects upload_file responses with blank upload_file_id', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 200,
-      data: {
-        upload_file_id: '   ',
-        expires_in: 300,
-        file_name: 'idpService.test.js',
-        file_size: 1,
-        content_type: 'application/pdf'
-      }
-    });
-    const httpClient = {
-      post: jest.fn()
-    };
-
-    await expect(parseDocument(buildLocalFilePayload(), {
-      remoteConfig: {
-        baseUrl: 'http://localhost:8401',
-        authorization: 'Bearer TOKEN',
-        timeout: 1234
-      },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'MCP_ERROR',
-      message: UPLOAD_RESPONSE_INVALID_MESSAGE,
-      suggestion: SERVICE_RESPONSE_INVALID_SUGGESTION
-    });
-    expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
-  test('parseDocument rejects upload_file responses missing upload_file_id', async () => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 200,
-      data: {
-        file_name: 'idpService.test.js',
-        file_size: 1,
-        content_type: 'application/pdf',
-        expires_in: 300
-      }
-    });
-    const httpClient = {
-      post: jest.fn()
-    };
-
-    await expect(parseDocument(buildLocalFilePayload(), {
-      remoteConfig: {
-        baseUrl: 'http://localhost:8401',
-        authorization: 'Bearer TOKEN',
-        timeout: 1234
-      },
-      httpClient,
-      rawUploadClient,
-      encryptionDetector: createNotEncryptedDetector()
-    })).rejects.toMatchObject({
-      type: 'MCP_ERROR',
-      message: UPLOAD_RESPONSE_INVALID_MESSAGE,
-      suggestion: SERVICE_RESPONSE_INVALID_SUGGESTION
-    });
-    expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
-  test.each([
-    ['success', { status: 'success' }],
-    ['processing', { status: 'processing' }]
-  ])('parseDocument rejects envelope-shaped upload_file %s responses missing upload_file_id', async (_name, data) => {
-    const rawUploadClient = jest.fn().mockResolvedValueOnce({
-      status: 200,
-      data
-    });
-    const httpClient = {
-      post: jest.fn()
-    };
-
-    let error;
-    try {
-      await parseDocument(buildLocalFilePayload(), {
-        remoteConfig: {
-          baseUrl: 'http://localhost:8401',
-          authorization: 'Bearer TOKEN',
-          timeout: 1234
-        },
-        httpClient,
-        rawUploadClient,
-        encryptionDetector: createNotEncryptedDetector()
-      });
-    } catch (caughtError) {
-      error = caughtError;
-    }
-
-    expect(error).toBeDefined();
-    expect(error.type).toBe('MCP_ERROR');
-    expect(error.code).toBe(-1);
-    expect(error.message).toBe(UPLOAD_RESPONSE_INVALID_MESSAGE);
-    expect(error.suggestion).toBe(SERVICE_RESPONSE_INVALID_SUGGESTION);
-    expectNoInternalUploadTroubleshootingText(error);
-    expect(rawUploadClient).toHaveBeenCalledTimes(1);
-    expect(httpClient.post).not.toHaveBeenCalled();
-  });
-
   test('parseDocument hides gateway configuration details on unexpected parse request failures', async () => {
     const httpClient = {
       post: jest.fn().mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:8401'))
@@ -1071,6 +1077,44 @@ describe('idp service configuration', () => {
         timeout: 300000,
         validateStatus: expect.any(Function)
       })
+    );
+  });
+
+  test('parseDocument preserves a task id when direct URL validation fails after task creation', async () => {
+    const failedEnvelope = {
+      task_id: 'doc_url_failed_1',
+      status: 'failed',
+      error: {
+        code: 100205,
+        description: '文件大小超过限制',
+        explanation: '请上传大小符合限制的文件后重试。'
+      }
+    };
+    const httpClient = {
+      post: jest.fn().mockResolvedValue({ status: 400, data: failedEnvelope })
+    };
+
+    const result = await parseDocument({
+      file_url: 'https://files.example.com/oversized.pdf'
+    }, {
+      remoteConfig: {
+        baseUrl: 'http://localhost:8401',
+        authorization: 'Bearer TOKEN',
+        timeout: 1234
+      },
+      httpClient
+    });
+
+    expect(result).toEqual({
+      task_id: 'doc_url_failed_1',
+      status: 'failed',
+      message: '文件大小超过限制，请上传大小符合限制的文件后重试。',
+      error: failedEnvelope.error
+    });
+    expect(httpClient.post).toHaveBeenCalledWith(
+      'http://localhost:8401/idp/parse_document',
+      { file_url: 'https://files.example.com/oversized.pdf' },
+      expect.any(Object)
     );
   });
 
