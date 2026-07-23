@@ -9,6 +9,32 @@ const {
 const configService = require('./configService');
 const mcpServers = require('../config/mcpServers.json');
 
+function normalizeMcpRequestError(error, config) {
+  if (
+    !(error instanceof QccError)
+    || ![404, 405].includes(error.httpStatus)
+  ) {
+    return error;
+  }
+
+  return new QccError(
+    ErrorType.MCP_ERROR,
+    `MCP 服务地址不可用（HTTP ${error.httpStatus}）`,
+    {
+      code: error.code,
+      httpStatus: error.httpStatus,
+      serverCode: error.serverCode,
+      serverMessage: error.serverMessage || error.message,
+      requestUrl: error.requestUrl,
+      suggestion: [
+        `当前 mcp.baseUrl：${config.baseUrl}`,
+        `正确默认地址：${configService.MCP_DEFAULT_BASE_URL}`,
+        `修复命令：qcc config set mcp.baseUrl "${configService.MCP_DEFAULT_BASE_URL}"`
+      ].join('\n')
+    }
+  );
+}
+
 class McpService {
   constructor() {
     this.httpClient = createHttpClient();
@@ -105,7 +131,7 @@ class McpService {
       return this.parseResponse(response.data);
     } catch (error) {
       if (error instanceof QccError) {
-        throw error;
+        throw normalizeMcpRequestError(error, config);
       }
 
       throw new QccError(
@@ -141,7 +167,7 @@ class McpService {
       return this.parseToolsListResponse(response.data) || [];
     } catch (error) {
       if (error instanceof QccError) {
-        throw error;
+        throw normalizeMcpRequestError(error, config);
       }
 
       throw new QccError(
@@ -164,12 +190,16 @@ class McpService {
       if (isAuthErrorResponse(code, response)) {
         throw new QccError(ErrorType.AUTH_FAILED, message, {
           code,
+          serverCode: code,
+          serverMessage: message,
           suggestion: '身份凭证错误，请检查 Authorization 是否正确，或运行 qcc init 更新配置'
         });
       }
 
       throw new QccError(ErrorType.MCP_ERROR, message, {
         code,
+        serverCode: code,
+        serverMessage: message,
         suggestion: '请检查服务权限或稍后重试'
       });
     };
@@ -220,7 +250,11 @@ class McpService {
           tools: [],
           error: error.message,
           errorType: error.type,
-          suggestion: error.suggestion
+          suggestion: error.suggestion,
+          httpStatus: error.httpStatus,
+          serverCode: error.serverCode,
+          serverMessage: error.serverMessage,
+          requestUrl: error.requestUrl
         };
       }
     }));
@@ -248,11 +282,53 @@ class McpService {
       };
     }
 
-    const serverFailure = failures.find((result) => result.errorType === ErrorType.SERVER_ERROR);
+    const invalidBaseUrlFailure = failures.find((result) => (
+      result.errorType === ErrorType.CONFIG_INVALID_BASE_URL
+    ));
+    if (invalidBaseUrlFailure) {
+      const message = invalidBaseUrlFailure.suggestion
+        || `MCP baseUrl 配置不正确，请运行 qcc init --authorization "Bearer YOUR_API_KEY" 恢复默认地址 ${configService.MCP_DEFAULT_BASE_URL}`;
+      return { message, suggestion: message };
+    }
+
+    const overseasFailure = failures.find((result) => result.serverCode === 100002);
+    if (overseasFailure) {
+      const message = '当前网络出口可能受到境外访问限制，请切换至中国大陆网络出口后重试；如仍失败请联系服务支持';
+      return { message, suggestion: message };
+    }
+
+    const endpointFailure = failures.find((result) => (
+      result.httpStatus === 404 || result.httpStatus === 405
+    ));
+    if (endpointFailure) {
+      const message = endpointFailure.suggestion || [
+        `MCP 服务地址不可用（HTTP ${endpointFailure.httpStatus}），请检查 mcp.baseUrl 配置`,
+        `正确默认地址：${configService.MCP_DEFAULT_BASE_URL}`,
+        `修复命令：qcc config set mcp.baseUrl "${configService.MCP_DEFAULT_BASE_URL}"`
+      ].join('\n');
+      return { message, suggestion: message };
+    }
+
+    const proxyFailure = failures.find((result) => result.httpStatus === 407);
+    if (proxyFailure) {
+      const message = '代理服务器要求认证，请检查 HTTP_PROXY、HTTPS_PROXY 或操作系统代理配置';
+      return { message, suggestion: message };
+    }
+
+    const rateLimitFailure = failures.find((result) => result.httpStatus === 429);
+    if (rateLimitFailure) {
+      const message = '请求频率或账号配额已受限，请稍后重试或确认账号配额';
+      return { message, suggestion: message };
+    }
+
+    const serverFailure = failures.find((result) => (
+      result.errorType === ErrorType.SERVER_ERROR || result.httpStatus >= 500
+    ));
     if (serverFailure) {
+      const message = 'MCP 服务端暂时不可用，请稍后重试；持续失败时请联系服务支持';
       return {
-        message: '请检查网络连接，或稍后重试',
-        suggestion: serverFailure.suggestion || '请检查网络连接，或稍后重试'
+        message,
+        suggestion: message
       };
     }
 
@@ -267,9 +343,14 @@ class McpService {
     }
 
     const firstFailure = failures[0];
+    const serverDetail = firstFailure.serverMessage
+      ? `服务端返回：${firstFailure.serverMessage}。`
+      : '';
+    const message = firstFailure.suggestion
+      || `${serverDetail}请检查 MCP baseUrl、Authorization 和服务权限，或稍后重试`;
     return {
-      message: firstFailure.suggestion || '请检查请求配置或稍后重试',
-      suggestion: firstFailure.suggestion || ''
+      message,
+      suggestion: message
     };
   }
 
@@ -282,7 +363,11 @@ class McpService {
       latest: {
         error: error.message,
         errorType: error.type,
-        suggestion: error.suggestion
+        suggestion: error.suggestion,
+        httpStatus: error.httpStatus,
+        serverCode: error.serverCode,
+        serverMessage: error.serverMessage,
+        requestUrl: error.requestUrl
       }
     });
   }

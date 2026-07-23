@@ -20,7 +20,7 @@ async function check() {
   const integrity = configService.checkConfigIntegrity();
   if (!integrity.valid) {
     console.log(chalk.red('✗') + ` 配置文件: ${integrity.error}`);
-    console.log(chalk.yellow('  请运行 qcc init 重新配置'));
+    console.log(chalk.yellow(`  ${integrity.suggestion || '请运行 qcc init 重新配置'}`));
     process.exit(1);
     return;
   }
@@ -38,7 +38,7 @@ async function check() {
 
   if (!isMcpEnabled) {
     console.log(chalk.gray('○') + ' MCP 模式已禁用 (mcp.enabled=false)');
-    console.log(chalk.gray('  使用 "qcc config set mcp.enabled true" 启用'));
+    console.log(chalk.gray('  使用 qcc config set mcp.enabled "true" 启用'));
     process.exit(1);
   } else if (hasMcpConfig) {
     console.log(chalk.green('✓') + ` baseUrl: ${mcpBaseUrl}`);

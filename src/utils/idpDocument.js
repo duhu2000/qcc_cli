@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const { IDP_ERROR_CATALOG } = require('../constants/idpErrors');
+const { validateIdpDirectUrlStatic } = require('./idpDirectUrlStaticValidation');
 
 const PARSE_DOCUMENT_OPTION_NAMES = new Set([
   'file_path',
@@ -85,19 +87,12 @@ function inspectUrlSource(options = {}) {
     return null;
   }
 
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(fileUrl);
-  } catch (error) {
-    throw new IdpDocumentError('invalid_file_url', '参数 --file_url 必须是有效的 HTTP(S) URL');
+  const validation = validateIdpDirectUrlStatic(fileUrl);
+  if (!validation.ok) {
+    throw new IdpDocumentError(100212, IDP_ERROR_CATALOG[100212].explanation);
   }
 
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    throw new IdpDocumentError('invalid_file_url', '参数 --file_url 必须是有效的 HTTP(S) URL');
-  }
-
-
-  return { file_url: fileUrl };
+  return { file_url: validation.value };
 }
 
 function parseNonNegativeInteger(optionName, value) {

@@ -35,7 +35,7 @@ describe('command examples', () => {
       { role: '原告 被告', year: '2025' }
     );
 
-    expect(example).toBe('qcc risk get_court_notice --searchKey "企业名称或统一社会信用代码" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year 2026');
+    expect(example).toBe('qcc risk get_court_notice --searchKey "企业名称或统一社会信用代码" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year "2026"');
   });
 
   test('builds array parameter hint using repeated options', () => {

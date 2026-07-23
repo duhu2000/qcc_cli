@@ -7,7 +7,11 @@ function buildFailureResults(failedItems) {
     acc[item.server] = {
       error: item.error,
       errorType: item.errorType,
-      suggestion: item.suggestion
+      suggestion: item.suggestion,
+      httpStatus: item.httpStatus,
+      serverCode: item.serverCode,
+      serverMessage: item.serverMessage,
+      requestUrl: item.requestUrl
     };
     return acc;
   }, {});
@@ -53,13 +57,20 @@ async function updateTools(options = {}) {
   const { silent = false } = options;
 
   if (!silent) {
-    console.log(chalk.bold('\n正在更新工具信息...\n'));
+    console.log(chalk.gray('\n正在更新工具信息...\n'));
   }
 
   if (!configService.isMcpConfigValid()) {
-    console.error(chalk.red('错误: 配置不完整'));
-    console.log(chalk.yellow('请先运行 qcc init --authorization "Bearer YOUR_API_KEY" 进行配置'));
+    const integrity = configService.checkConfigIntegrity();
+    if (integrity.errorType === 'CONFIG_INVALID_BASE_URL') {
+      console.error(chalk.red(`错误: ${integrity.error}`));
+      console.log(chalk.yellow(`建议: ${integrity.suggestion}`));
+    } else {
+      console.error(chalk.red('错误: 配置不完整'));
+      console.log(chalk.yellow('请先运行 qcc init --authorization "Bearer YOUR_API_KEY" 进行配置'));
+    }
     process.exit(1);
+    return null;
   }
 
   const servers = mcpService.getShortServerNames();
@@ -97,7 +108,11 @@ async function updateTools(options = {}) {
         server: serverName,
         error: error.message,
         errorType: error.type,
-        suggestion: error.suggestion
+        suggestion: error.suggestion,
+        httpStatus: error.httpStatus,
+        serverCode: error.serverCode,
+        serverMessage: error.serverMessage,
+        requestUrl: error.requestUrl
       });
 
       if (!silent) {
@@ -112,6 +127,9 @@ async function updateTools(options = {}) {
 
   if (!silent) {
     printVerboseSummary(results);
+    if (results.success.length === 0) {
+      process.exitCode = 1;
+    }
   }
 
   return results;

@@ -107,6 +107,12 @@ qcc --version
 qcc init --authorization "Bearer YOUR_API_KEY"
 ```
 
+仅指定 `--authorization` 时，CLI 会把 `mcp.baseUrl` 恢复为默认值 `https://agent.qcc.com/mcp`。这也可用于修复旧配置中误写为 `.../company/stream` 等具体服务端点的地址。如需使用自定义 MCP 基础地址，请显式传入：
+
+```bash
+qcc init --mcpBaseUrl "http://localhost:8401/custom" --authorization "Bearer YOUR_API_KEY"
+```
+
 ### 4\. 开启查询
 
 查询企业工商注册信息：
@@ -206,7 +212,7 @@ qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 
 ### 字段解析
 
-* `mcp.baseUrl`: MCP API 服务基础路径，`document` 文档解析命令也复用该地址。
+* `mcp.baseUrl`: MCP API 服务基础路径，默认值为 `https://agent.qcc.com/mcp`，`document` 文档解析命令也复用该地址。该值只允许 HTTP(S) 基础地址，不能包含查询参数、锚点或 `/company/stream` 等具体服务端点；末尾的 `/` 会自动移除。
 * `mcp.authorization`: MCP 与 `document` 文档解析共用访问凭证，输出时会自动脱敏。
 * `mcp.timeout`: 通用请求超时时间（毫秒）；`document` 的 `parse_document` 提交阶段固定为 300 秒，`get_parse_result` 仍使用该值。
 * `mcp.enabled`: 是否启用 MCP 模式（默认 `true`）。
@@ -215,7 +221,7 @@ qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 
 ```bash
 # 设置配置
-qcc config set mcp.baseUrl https://agent.qcc.com/mcp
+qcc config set mcp.baseUrl "https://agent.qcc.com/mcp"
 qcc config set mcp.authorization "Bearer YOUR_API_KEY"
 
 # 获取配置
@@ -224,6 +230,8 @@ qcc config get mcp.baseUrl
 # 列出所有配置
 qcc config list
 ```
+
+`qcc init --authorization "<token>"` 用于重新初始化连接配置，会把 `mcp.baseUrl` 恢复为默认值。若只想更新凭证并保留现有自定义地址，请使用 `qcc config set mcp.authorization "<token>"`。修改 `mcp.baseUrl` 或 `mcp.authorization` 后，旧工具缓存会自动清除。
 
 ### 安全性提示
 

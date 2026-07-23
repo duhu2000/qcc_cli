@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { QccError, ErrorType } = require('../utils/httpClient');
+const mcpServers = require('../config/mcpServers.json');
 
 const CONFIG_DIR = path.join(os.homedir(), '.qcc');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -12,6 +13,9 @@ const TOOLS_CACHE_FILE = path.join(CACHE_DIR, 'tools.json');
  * MCP 默认基础 URL
  */
 const MCP_DEFAULT_BASE_URL = 'https://agent.qcc.com/mcp';
+const MCP_SERVER_ENDPOINTS = Object.values(mcpServers).map(({ endpoint }) => (
+  endpoint.replace(/\/+$/, '')
+));
 
 /**
  * 默认配置模板
@@ -25,6 +29,72 @@ const DEFAULT_CONFIG = {
     timeout: 30000
   }
 };
+
+function getBaseUrlDisplayValue(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return '(未设置)';
+  }
+
+  const rawValue = value.trim();
+  try {
+    const parsedUrl = new URL(rawValue);
+    parsedUrl.username = '';
+    parsedUrl.password = '';
+    parsedUrl.search = '';
+    parsedUrl.hash = '';
+    return parsedUrl.toString().replace(/\/$/, '');
+  } catch (error) {
+    return rawValue;
+  }
+}
+
+function createInvalidBaseUrlError(message, value) {
+  return new QccError(ErrorType.CONFIG_INVALID_BASE_URL, message, {
+    suggestion: [
+      `当前 mcp.baseUrl：${getBaseUrlDisplayValue(value)}`,
+      `正确默认地址：${MCP_DEFAULT_BASE_URL}`,
+      `修复命令：qcc config set mcp.baseUrl "${MCP_DEFAULT_BASE_URL}"`
+    ].join('\n')
+  });
+}
+
+/**
+ * 校验并规范化 MCP 基础地址。
+ * @param {string} value - MCP 基础地址
+ * @returns {string} 规范化后的基础地址
+ */
+function normalizeMcpBaseUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw createInvalidBaseUrlError('MCP baseUrl 不能为空', value);
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(value.trim());
+  } catch (error) {
+    throw createInvalidBaseUrlError(`MCP baseUrl 不是有效 URL: ${value}`, value);
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    throw createInvalidBaseUrlError('MCP baseUrl 仅支持 http 或 https 协议', value);
+  }
+  if (parsedUrl.username || parsedUrl.password) {
+    throw createInvalidBaseUrlError('MCP baseUrl 不能包含用户名或密码', value);
+  }
+  if (parsedUrl.search || parsedUrl.hash) {
+    throw createInvalidBaseUrlError('MCP baseUrl 不能包含查询参数或锚点', value);
+  }
+
+  const pathname = parsedUrl.pathname.replace(/\/+$/, '');
+  const endpoint = MCP_SERVER_ENDPOINTS.find((item) => (
+    pathname === item || pathname.endsWith(item)
+  ));
+  if (endpoint) {
+    throw createInvalidBaseUrlError(`MCP baseUrl 包含了具体服务路径 ${endpoint}`, value);
+  }
+
+  return `${parsedUrl.origin}${pathname}`;
+}
 
 /**
  * 确保目录存在
@@ -64,12 +134,13 @@ function load() {
  * @param {object} config - 配置对象
  */
 function save(config) {
+  const baseUrl = config.mcp?.baseUrl || MCP_DEFAULT_BASE_URL;
   // 创建不可变副本，填充默认 baseUrl（避免修改原始对象）
   const configToSave = {
     ...config,
     mcp: {
       ...config.mcp,
-      baseUrl: config.mcp?.baseUrl || MCP_DEFAULT_BASE_URL
+      baseUrl: normalizeMcpBaseUrl(baseUrl)
     }
   };
 
@@ -122,7 +193,7 @@ function getMcpConfig() {
       '未找到配置文件',
       {
         suggestion: '请先初始化配置:\n' +
-          '  qcc init --authorization <token>  配置授权信息\n' +
+          '  qcc init --authorization "<token>"  配置授权信息\n' +
           '  qcc check                         检查配置状态'
       }
     );
@@ -137,14 +208,16 @@ function getMcpConfig() {
       'MCP 配置不完整',
       {
         suggestion: '请补充配置:\n' +
-          '  qcc init --authorization <token>  配置授权信息\n' +
+          '  qcc init --authorization "<token>"  配置授权信息\n' +
           '  qcc check                         检查配置状态'
       }
     );
   }
 
+  const normalizedBaseUrl = normalizeMcpBaseUrl(baseUrl);
+
   return {
-    baseUrl,
+    baseUrl: normalizedBaseUrl,
     authorization,
     timeout: config.mcp?.timeout || 30000,
     enabled: config.mcp?.enabled ?? true
@@ -158,7 +231,14 @@ function getMcpConfig() {
 function isMcpConfigValid() {
   const config = load();
   if (!config?.mcp) return false;
-  return !!(config.mcp.baseUrl && config.mcp.authorization);
+  if (!config.mcp.baseUrl || !config.mcp.authorization) return false;
+
+  try {
+    normalizeMcpBaseUrl(config.mcp.baseUrl);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 /**
@@ -261,6 +341,11 @@ function setConfigValue(keyPath, value) {
     ...DEFAULT_CONFIG,
     mcp: { ...DEFAULT_CONFIG.mcp }
   };
+  const previousValue = getConfigValue(keyPath);
+
+  if (keyPath === 'mcp.baseUrl') {
+    value = normalizeMcpBaseUrl(value);
+  }
 
   // 设置值（支持嵌套路径）
   if (keyParts.length === 1) {
@@ -279,6 +364,13 @@ function setConfigValue(keyPath, value) {
 
   config.version = '2.1';
   save(config);
+
+  if (
+    ['mcp.baseUrl', 'mcp.authorization'].includes(keyPath)
+    && previousValue !== value
+  ) {
+    clearToolsCache();
+  }
 }
 
 /**
@@ -323,6 +415,20 @@ function checkConfigIntegrity() {
       return { valid: false, error: '配置文件格式错误', exists: true };
     }
 
+    if (config.mcp?.baseUrl) {
+      try {
+        normalizeMcpBaseUrl(config.mcp.baseUrl);
+      } catch (error) {
+        return {
+          valid: false,
+          error: error.message,
+          errorType: error.type,
+          suggestion: error.suggestion,
+          exists: true
+        };
+      }
+    }
+
     return { valid: true, error: null, exists: true };
   } catch (error) {
     return {
@@ -349,6 +455,7 @@ module.exports = {
   migrateConfig,
   DEFAULT_CONFIG,
   MCP_DEFAULT_BASE_URL,
+  normalizeMcpBaseUrl,
   CONFIG_DIR,
   CACHE_DIR,
 

@@ -8,6 +8,7 @@ const { version } = require('../../package.json');
 const ErrorType = {
   CONFIG_NOT_FOUND: 'CONFIG_NOT_FOUND',
   CONFIG_INVALID: 'CONFIG_INVALID',
+  CONFIG_INVALID_BASE_URL: 'CONFIG_INVALID_BASE_URL',
   CONFIG_MISSING_FIELD: 'CONFIG_MISSING_FIELD',
 
   AUTH_FAILED: 'AUTH_FAILED',
@@ -33,9 +34,21 @@ class QccError extends Error {
     super(message);
     this.name = 'QccError';
     this.type = type;
-    this.code = options.code || -1;
-    this.recoverable = options.recoverable || false;
+    this.code = options.code ?? -1;
+    this.recoverable = options.recoverable ?? false;
     this.suggestion = options.suggestion || '';
+    if (options.httpStatus !== undefined) {
+      this.httpStatus = options.httpStatus;
+    }
+    if (options.serverCode !== undefined) {
+      this.serverCode = options.serverCode;
+    }
+    if (options.serverMessage !== undefined) {
+      this.serverMessage = options.serverMessage;
+    }
+    if (options.requestUrl !== undefined) {
+      this.requestUrl = options.requestUrl;
+    }
     if (options.details !== undefined) {
       this.details = options.details;
     }
@@ -69,6 +82,44 @@ function isAuthErrorResponse(status, data) {
   ));
 }
 
+function sanitizeRequestUrl(config = {}) {
+  const rawUrl = config.url;
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return '';
+  }
+
+  try {
+    const url = config.baseURL ? new URL(rawUrl, config.baseURL) : new URL(rawUrl);
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch (error) {
+    return rawUrl.split(/[?#]/, 1)[0];
+  }
+}
+
+function getServerErrorDetails(data) {
+  const normalizedData = normalizeErrorData(data);
+  return {
+    normalizedData,
+    serverCode: normalizedData?.error?.code ?? normalizedData?.code,
+    serverMessage: normalizedData?.error?.message ?? normalizedData?.message
+  };
+}
+
+function getHttpErrorSuggestion(status) {
+  if (status === 404 || status === 405) {
+    return '请检查 MCP baseUrl 是否为基础地址，且不要包含 /company/stream 等具体服务路径';
+  }
+  if (status === 407) {
+    return '代理服务器要求认证，请检查 HTTP_PROXY、HTTPS_PROXY 或系统代理配置';
+  }
+  if (status === 429) {
+    return '请求频率或配额已受限，请稍后重试或确认账号配额';
+  }
+  return '请求被服务端拒绝，请检查 MCP 服务地址、访问权限和服务状态';
+}
+
 /**
  * 创建 HTTP 客户端
  * @param {object} options - 配置选项
@@ -93,46 +144,58 @@ function createHttpClient(options = {}) {
   client.interceptors.response.use(
     (response) => response,
     (error) => {
+      const requestConfig = error.config || error.response?.config || {};
+      const requestUrl = sanitizeRequestUrl(requestConfig);
+
       if (error.code === 'ECONNABORTED') {
         throw new QccError(ErrorType.TIMEOUT, '请求超时', {
           recoverable: true,
-          suggestion: '请检查网络连接后重试'
+          suggestion: '请检查网络连接后重试',
+          requestUrl
         });
       }
 
       if (error.response) {
         const { status, data } = error.response;
-        const normalizedData = normalizeErrorData(data);
+        const { normalizedData, serverCode, serverMessage } = getServerErrorDetails(data);
+        const errorMetadata = {
+          code: status,
+          httpStatus: status,
+          serverCode,
+          serverMessage,
+          requestUrl
+        };
 
         if (isAuthErrorResponse(status, normalizedData)) {
           throw new QccError(
             ErrorType.AUTH_FAILED,
-            normalizedData?.error?.message || normalizedData?.message || '认证失败',
+            serverMessage || '认证失败',
             {
-              code: status,
+              ...errorMetadata,
               suggestion: '身份凭证错误，请检查 Authorization 是否正确，或运行 qcc init 更新配置'
             }
           );
         }
 
         if (status >= 500) {
-          throw new QccError(ErrorType.SERVER_ERROR, `服务器错误: ${status}`, {
-            code: status,
+          throw new QccError(ErrorType.SERVER_ERROR, serverMessage || `服务器错误: ${status}`, {
+            ...errorMetadata,
             recoverable: true,
-            suggestion: '请检查网络连接，或稍后重试'
+            suggestion: '服务端暂时不可用，请稍后重试'
           });
         }
 
-        throw new QccError(ErrorType.MCP_ERROR, normalizedData?.message || '请求失败', {
-          code: status,
-          suggestion: '请检查请求参数是否正确'
+        throw new QccError(ErrorType.MCP_ERROR, serverMessage || '请求失败', {
+          ...errorMetadata,
+          suggestion: getHttpErrorSuggestion(status)
         });
       }
 
       if (error.request) {
         throw new QccError(ErrorType.NETWORK_ERROR, '网络错误，无法连接到服务器', {
           recoverable: true,
-          suggestion: '请检查网络连接和服务器地址是否正确'
+          suggestion: '请检查网络连接、代理配置和 MCP 服务地址是否正确',
+          requestUrl
         });
       }
 
@@ -214,7 +277,7 @@ function handleError(error) {
   }
 
   if (error.recoverable) {
-    console.log(chalk.gray('这是一个临时性错误，可以稍后重试。'));
+    console.log(chalk.yellow('建议: 这是一个临时性错误，可以稍后重试。'));
   }
 }
 
@@ -223,6 +286,7 @@ module.exports = {
   QccError,
   isAuthErrorResponse,
   normalizeErrorData,
+  sanitizeRequestUrl,
   createHttpClient,
   parseSSEResponse,
   extractMcpContent,

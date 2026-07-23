@@ -27,7 +27,7 @@ async function listTools(serverName) {
       }
     } catch (error) {
       if (error.type === 'AUTH_FAILED') {
-        console.log(chalk.red('更新失败: 凭证不正确\n'));
+        console.error(chalk.red('错误: 更新失败: 凭证不正确\n'));
       } else {
         const failureSummary = mcpService.getFailureSummaryFromError(error);
         console.log(chalk.yellow(`更新失败: ${error.message}\n`));

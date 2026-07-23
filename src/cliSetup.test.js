@@ -2,6 +2,50 @@
 
 const { Command } = require('commander');
 
+describe('init command registration', () => {
+  let initCommand;
+  let finishInit;
+
+  beforeEach(() => {
+    jest.resetModules();
+    initCommand = jest.fn(() => new Promise((resolve) => {
+      finishInit = resolve;
+    }));
+    jest.doMock('./commands/init', () => initCommand);
+  });
+
+  afterEach(() => {
+    jest.dontMock('./commands/init');
+  });
+
+  test('waits for asynchronous initialization to finish', async () => {
+    const { registerStaticCommands } = require('./cliSetup');
+    const program = new Command();
+    registerStaticCommands(program);
+    let settled = false;
+
+    const parsing = program.parseAsync([
+      'node',
+      'qcc',
+      'init',
+      '--authorization',
+      'Bearer token'
+    ]).then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(initCommand).toHaveBeenCalledWith(expect.objectContaining({
+      authorization: 'Bearer token'
+    }));
+    expect(settled).toBe(false);
+
+    finishInit();
+    await parsing;
+    expect(settled).toBe(true);
+  });
+});
+
 describe('document command registration', () => {
   let parseDocument;
   let getParseResult;
@@ -80,6 +124,90 @@ describe('document command registration', () => {
 
     expect(shouldSkipBootstrapCacheRefresh(['document'])).toBe(true);
     expect(shouldSkipBootstrapCacheRefresh(['idp'])).toBe(false);
+  });
+});
+
+describe('invalid MCP base URL command registration', () => {
+  let exitSpy;
+  let errorSpy;
+  let logSpy;
+
+  beforeEach(() => {
+    jest.resetModules();
+    exitSpy = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`EXIT:${code}`);
+    });
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.doMock('chalk', () => ({
+      red: (value) => `<red>${value}</red>`,
+      yellow: (value) => `<yellow>${value}</yellow>`
+    }));
+    jest.doMock('./services/configService', () => ({
+      isMcpConfigValid: () => false,
+      getMcpConfig: () => {
+        const error = new Error('MCP baseUrl 包含了具体服务路径 /company/stream');
+        error.type = 'CONFIG_INVALID_BASE_URL';
+        error.suggestion = [
+          '当前 mcp.baseUrl：https://agent.qcc.com/mcp/company/stream',
+          '正确默认地址：https://agent.qcc.com/mcp',
+          '修复命令：qcc config set mcp.baseUrl "https://agent.qcc.com/mcp"'
+        ].join('\n');
+        throw error;
+      }
+    }));
+    jest.doMock('./services/mcpService', () => ({
+      getShortServerNames: () => ['company'],
+      getServerByShortName: () => ({ name: '企业信息' })
+    }));
+    jest.doMock('./commands/idp', () => ({
+      parseDocument: jest.fn(),
+      getParseResult: jest.fn()
+    }));
+    jest.doMock('./utils/cacheUtils', () => ({
+      getCachedTools: () => null,
+      getCachedToolsWithFallback: () => null,
+      getServerToolsFromCache: () => [],
+      getServerToolsFromCacheWithFallback: () => []
+    }));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+    jest.dontMock('./services/configService');
+    jest.dontMock('./services/mcpService');
+    jest.dontMock('./commands/idp');
+    jest.dontMock('./utils/cacheUtils');
+    jest.dontMock('chalk');
+  });
+
+  test('reports the invalid base URL instead of saying configuration is uninitialized', async () => {
+    const { registerMcpCommands } = require('./cliSetup');
+    const program = new Command();
+    registerMcpCommands(program);
+
+    await expect(program.parseAsync([
+      'node',
+      'qcc',
+      'company',
+      'get_company_registration_info',
+      '企查查科技股份有限公司'
+    ]))
+      .rejects.toThrow('EXIT:1');
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '<red>错误: MCP baseUrl 包含了具体服务路径 /company/stream</red>'
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      `<yellow>${[
+        '建议: 当前 mcp.baseUrl：https://agent.qcc.com/mcp/company/stream',
+        '正确默认地址：https://agent.qcc.com/mcp',
+        '修复命令：qcc config set mcp.baseUrl "https://agent.qcc.com/mcp"'
+      ].join('\n')}</yellow>`
+    );
+    expect(errorSpy).not.toHaveBeenCalledWith('<red>错误: 配置未初始化</red>');
   });
 });
 

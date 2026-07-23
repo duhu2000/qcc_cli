@@ -74,7 +74,7 @@ function resolveIdpHttpConfig(env = process.env, userConfig = configService.load
   if (!baseUrl || !authorization) {
     throw new QccError(ErrorType.CONFIG_MISSING_FIELD, 'MCP 配置不完整', {
       suggestion: '请补充配置:\n' +
-        '  qcc init --authorization <token>  配置授权信息\n' +
+        '  qcc init --authorization "<token>"  配置授权信息\n' +
         '  qcc check                         检查配置状态'
     });
   }

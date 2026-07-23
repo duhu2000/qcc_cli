@@ -23,11 +23,21 @@ function printJsonRpcError(result) {
 
 async function callMcp(serverName, toolName, params, options = {}) {
   if (!configService.isMcpConfigValid()) {
-    console.error(chalk.red('\n错误: 未找到配置文件或配置不完整'));
-    console.error(chalk.yellow('\n请先初始化配置:'));
-    console.error(chalk.gray('  qcc init --authorization <token>  配置授权信息'));
-    console.error(chalk.gray('  qcc check                         检查配置状态'));
+    try {
+      configService.getMcpConfig();
+    } catch (error) {
+      if (error.type === 'CONFIG_INVALID_BASE_URL') {
+        console.error(chalk.red(`\n错误: ${error.message}`));
+        console.error(chalk.yellow(`建议: ${error.suggestion}`));
+      } else {
+        console.error(chalk.red('\n错误: 未找到配置文件或配置不完整'));
+        console.error(chalk.yellow('\n请先初始化配置:'));
+        console.error(chalk.yellow('  qcc init --authorization "<token>"  配置授权信息'));
+        console.error(chalk.yellow('  qcc check                         检查配置状态'));
+      }
+    }
     process.exit(1);
+    return;
   }
 
   if (configService.isToolsCacheExpired()) {
@@ -43,7 +53,7 @@ async function callMcp(serverName, toolName, params, options = {}) {
       }
     } catch (error) {
       if (error.type === 'AUTH_FAILED') {
-        console.log(chalk.red('更新失败: 凭证不正确\n'));
+        console.error(chalk.red('错误: 更新失败: 凭证不正确\n'));
         console.error(chalk.red('错误: 工具列表获取失败'));
         console.log(chalk.yellow('建议: 请检查 Authorization 是否正确，或运行 qcc init 更新配置'));
         process.exit(1);

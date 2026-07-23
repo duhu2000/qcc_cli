@@ -123,12 +123,7 @@ function getSampleValue(key, propDef = {}) {
 }
 
 function formatParamValue(key, propDef = {}) {
-  const type = getSchemaType(propDef);
   const sample = getSampleValue(key, propDef);
-
-  if (type === 'integer' || type === 'number' || type === 'boolean') {
-    return String(sample);
-  }
   return quoteValue(sample);
 }
 

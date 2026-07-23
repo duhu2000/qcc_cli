@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
+  IdpDocumentError,
   buildParseDocumentPayload,
   parsePageRange
 } = require('./idpDocument');
@@ -86,14 +87,51 @@ describe('idp document payload builder', () => {
 
   test('builds URL payload without local file access', () => {
     const payload = buildParseDocumentPayload({
-      file_url: 'https://files.example.com/reports/demo.pdf',
+      file_url: 'https://files.qcc.com/reports/demo.pdf',
       wait: true
     });
 
     expect(payload).toEqual({
-      file_url: 'https://files.example.com/reports/demo.pdf',
+      file_url: 'https://files.qcc.com/reports/demo.pdf',
       wait: true
     });
+  });
+
+  test.each([
+    'https://test.qcc.com/report.pdf',
+    'https://example.qcc.com/report.pdf',
+    'https://files.qcc.com:8443/report.pdf',
+    'http://redis:8080/report.pdf'
+  ])('allows static direct URL boundary %s', (fileUrl) => {
+    expect(buildParseDocumentPayload({ file_url: fileUrl })).toEqual({
+      file_url: fileUrl,
+      wait: false
+    });
+  });
+
+  test.each([
+    'http://127.0.0.1/private.pdf?token=secret',
+    'http://10.0.0.1/private.pdf?token=secret',
+    'https://qcc.test/private.pdf?token=secret',
+    'https://user:password@files.qcc.com/private.pdf?token=secret'
+  ])('rejects unsafe URL %s before local file access', (fileUrl) => {
+    const statSpy = jest.spyOn(fs, 'statSync');
+
+    let error;
+    try {
+      buildParseDocumentPayload({ file_url: fileUrl });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(IdpDocumentError);
+    expect(error).toMatchObject({
+      code: 100212,
+      message: 'URL 文件不可获取、不可识别或不满足解析限制，请检查 URL 后重试。'
+    });
+    expect(error.message).not.toMatch(/127\.0\.0\.1|10\.0\.0\.1|qcc\.test|password|token=secret/u);
+    expect(statSpy).not.toHaveBeenCalled();
+    statSpy.mockRestore();
   });
 
   test('rejects missing or conflicting local and URL sources', () => {
@@ -103,21 +141,21 @@ describe('idp document payload builder', () => {
     expect(() => buildParseDocumentPayload({})).toThrow('请指定 1 个文档来源：--file_path 或 --file_url。');
     expect(() => buildParseDocumentPayload({
       file_path: filePath,
-      file_url: 'https://files.example.com/demo.pdf'
+      file_url: 'https://files.qcc.com/demo.pdf'
     })).toThrow('请只指定 1 个文档来源：--file_path 或 --file_url。');
   });
 
   test('passes URL path file types through without local business validation', () => {
     expect(buildParseDocumentPayload({
-      file_url: 'https://files.example.com/archive.zip'
+      file_url: 'https://files.qcc.com/archive.zip'
     })).toEqual({
-      file_url: 'https://files.example.com/archive.zip',
+      file_url: 'https://files.qcc.com/archive.zip',
       wait: false
     });
     expect(buildParseDocumentPayload({
-      file_url: 'https://files.example.com/demo.txt'
+      file_url: 'https://files.qcc.com/demo.txt'
     })).toEqual({
-      file_url: 'https://files.example.com/demo.txt',
+      file_url: 'https://files.qcc.com/demo.txt',
       wait: false
     });
   });
@@ -155,19 +193,19 @@ describe('idp document payload builder', () => {
   test('rejects invalid file_path value count and hidden or retired source aliases', () => {
     expect(() => buildParseDocumentPayload({ file: [] })).toThrow('参数 --file 无效');
     expect(() => buildParseDocumentPayload({
-      file_url: 'https://files.example.com/demo.pdf',
+      file_url: 'https://files.qcc.com/demo.pdf',
       file_name: 'demo.pdf'
     })).toThrow('参数 --file_name 无效');
     expect(() => buildParseDocumentPayload({
-      file_url: 'https://files.example.com/demo.pdf',
+      file_url: 'https://files.qcc.com/demo.pdf',
       file_type: 'pdf'
     })).toThrow('参数 --file_type 无效');
     expect(() => buildParseDocumentPayload({
-      file_url: 'https://files.example.com/demo.pdf',
+      file_url: 'https://files.qcc.com/demo.pdf',
       start_page_id: '0'
     })).toThrow('参数 --start_page_id 无效');
     expect(() => buildParseDocumentPayload({
-      file_url: 'https://files.example.com/demo.pdf',
+      file_url: 'https://files.qcc.com/demo.pdf',
       end_page_id: '2'
     })).toThrow('参数 --end_page_id 无效');
     expect(() => buildParseDocumentPayload({ file_path: ['a.pdf', 'b.pdf'] })).toThrow('参数 --file_path 只允许提供 1 个值');

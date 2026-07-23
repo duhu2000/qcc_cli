@@ -14,9 +14,9 @@ const configService = require('../services/configService');
 async function setConfig(keyPath, value) {
   // 先检查参数
   if (!keyPath || value === undefined) {
-    console.log(chalk.yellow('用法：qcc config set <keyPath> <value>'));
+    console.log(chalk.yellow('用法：qcc config set <keyPath> "<value>"'));
     console.log(chalk.gray('\n示例:'));
-    console.log(chalk.gray('  qcc config set mcp.baseUrl https://agent.qcc.com/mcp'));
+    console.log(chalk.gray('  qcc config set mcp.baseUrl "https://agent.qcc.com/mcp"'));
     console.log(chalk.gray('  qcc config set mcp.authorization "Bearer YOUR_API_KEY"'));
     process.exit(1);
     return;
@@ -25,7 +25,7 @@ async function setConfig(keyPath, value) {
   // 验证配置路径格式
   const parts = keyPath.split('.');
   if (parts.length < 2) {
-    console.log(chalk.red('错误：配置路径必须包含模块名'));
+    console.error(chalk.red('错误：配置路径必须包含模块名'));
     console.log(chalk.yellow('格式：<module>.<key>，如 "mcp.baseUrl"'));
     process.exit(1);
     return;
@@ -38,14 +38,14 @@ async function setConfig(keyPath, value) {
   };
 
   if (!validModules.includes(module)) {
-    console.log(chalk.red(`错误：未知模块 "${module}"`));
+    console.error(chalk.red(`错误：未知模块 "${module}"`));
     console.log(chalk.yellow(`可用模块：${validModules.join(', ')}`));
     process.exit(1);
     return;
   }
 
   if (!validKeys[module].includes(key)) {
-    console.log(chalk.red(`错误：未知配置项 "${module}.${key}"`));
+    console.error(chalk.red(`错误：未知配置项 "${module}.${key}"`));
     console.log(chalk.yellow(`可用配置项：${validKeys[module].join(', ')}`));
     process.exit(1);
     return;
@@ -58,7 +58,7 @@ async function setConfig(keyPath, value) {
   } else if (key === 'timeout') {
     typedValue = parseInt(value, 10);
     if (isNaN(typedValue)) {
-      console.log(chalk.red('错误：timeout 必须是数字'));
+      console.error(chalk.red('错误：timeout 必须是数字'));
       process.exit(1);
       return;
     }
@@ -74,7 +74,10 @@ async function setConfig(keyPath, value) {
     console.log(chalk.green(`✓ 配置已更新：${keyPath} = ${displayValue}`));
     console.log(chalk.gray(`配置文件：${configService.getConfigPath()}`));
   } catch (error) {
-    console.log(chalk.red(`错误：${error.message}`));
+    console.error(chalk.red(`错误：${error.message}`));
+    if (error.suggestion) {
+      console.log(chalk.yellow(`建议：${error.suggestion}`));
+    }
     process.exit(1);
     return;
   }

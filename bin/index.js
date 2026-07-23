@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const chalk = require('chalk');
 const pkg = require('../package.json');
 const { createProgram } = require('../src/cliSetup');
 
@@ -47,14 +48,14 @@ async function main() {
     }
 
     if (err.code === 'commander.optionMissingArgument') {
-      console.error('错误: 参数缺少值');
+      console.error(chalk.red('错误: 参数缺少值'));
       process.exit(1);
     }
 
     process.exit(1);
   });
 
-  program.parse();
+  await program.parseAsync();
 }
 
 main().catch((error) => {
@@ -67,6 +68,6 @@ main().catch((error) => {
     process.exit(0);
   }
 
-  console.error('CLI 启动失败:', error.message);
+  console.error(chalk.red(`CLI 启动失败: ${error.message}`));
   process.exit(1);
 });

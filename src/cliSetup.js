@@ -28,12 +28,38 @@ function getServerTools(serverName) {
   return getServerToolsFromCache(serverName);
 }
 
+function getMcpConfigError() {
+  try {
+    configService.getMcpConfig();
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
+function printMcpConfigError(error) {
+  if (error?.type === 'CONFIG_INVALID_BASE_URL') {
+    console.error(chalk.red(`错误: ${error.message}`));
+    if (error.suggestion) {
+      console.log(chalk.yellow(`建议: ${error.suggestion}`));
+    }
+    return;
+  }
+
+  console.error(chalk.red('错误: 配置未初始化'));
+  console.log(chalk.yellow('建议: 请先运行 qcc init --authorization "Bearer YOUR_API_KEY"'));
+}
+
 function buildFailureResults(failedItems = []) {
   return failedItems.reduce((acc, item) => {
     acc[item.server] = {
       error: item.error,
       errorType: item.errorType,
-      suggestion: item.suggestion
+      suggestion: item.suggestion,
+      httpStatus: item.httpStatus,
+      serverCode: item.serverCode,
+      serverMessage: item.serverMessage,
+      requestUrl: item.requestUrl
     };
     return acc;
   }, {});
@@ -93,9 +119,9 @@ function getRootHelpText() {
   qcc list-tools
   qcc list-tools <server>
   qcc <server> <tool> --help
-  qcc document parse_document --file_path <path> [--wait]
-  qcc document parse_document --file_url <http-url> [--wait]
-  qcc document get_parse_result <task_id>
+  qcc document parse_document --file_path "<path>" [--wait]
+  qcc document parse_document --file_url "<http-url>" [--wait]
+  qcc document get_parse_result "<task_id>"
 
 服务标识:
   ${serviceList}
@@ -103,9 +129,9 @@ function getRootHelpText() {
 示例:
   qcc company get_company_registration_info "企查查科技股份有限公司"
   qcc company verify_company_accuracy --searchKey "企查查科技股份有限公司" --name "法定代表人姓名"
-  qcc risk get_court_notice --searchKey "企查查科技股份有限公司" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year 2026
+  qcc risk get_court_notice --searchKey "企查查科技股份有限公司" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year "2026"
   qcc document parse_document --file_path "./sample.pdf"
-  qcc document parse_document --file_url "https://files.example.com/sample.pdf" --wait
+  qcc document parse_document --file_url "https://files.qcc.com/sample.pdf" --wait
   qcc document get_parse_result "qcc_task_id"
 `;
 }
@@ -269,15 +295,15 @@ function withStrictOptionValidation(command) {
     .exitOverride((err) => {
       if (err.code === 'commander.unknownOption') {
         const option = err.message.match(/'([^']+)'/)?.[1] || err.message;
-        console.error(`错误: 未知选项 ${option}`);
-        console.log('\n使用 --help 查看参数说明');
+        console.error(chalk.red(`错误: 未知选项 ${option}`));
+        console.log(chalk.yellow('\n建议: 使用 --help 查看参数说明'));
         process.exit(1);
       }
 
       if (err.code === 'commander.optionMissingArgument') {
         const option = err.message.match(/'([^']+)'/)?.[1] || '参数';
-        console.error(`错误: 选项 ${option} 缺少值`);
-        console.log('\n使用 --help 查看参数说明');
+        console.error(chalk.red(`错误: 选项 ${option} 缺少值`));
+        console.log(chalk.yellow('\n建议: 使用 --help 查看参数说明'));
         process.exit(1);
       }
 
@@ -293,7 +319,7 @@ function registerStaticCommands(program) {
       .option('--mcpBaseUrl <url>', 'MCP 服务基础地址')
       .option('--authorization <token>', 'MCP Authorization Token')
       .action((options) => {
-        initCommand(options);
+        return initCommand(options);
       })
   );
 
@@ -392,19 +418,22 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
   const getToolsFn = useFallback ? getServerToolsFromCacheWithFallback : getServerToolsFromCache;
 
   if (!configService.isMcpConfigValid()) {
+    const configError = getMcpConfigError();
+    const descriptionHint = configError?.type === 'CONFIG_INVALID_BASE_URL'
+      ? 'MCP baseUrl 配置错误'
+      : '请先运行 qcc init 初始化配置';
+
     shortServerNames.forEach((shortName) => {
       const serverConfig = mcpService.getServerByShortName(shortName);
       program
         .command(shortName)
-        .description(`${serverConfig?.name || shortName} - 请先运行 qcc init 初始化配置`)
+        .description(`${serverConfig?.name || shortName} - ${descriptionHint}`)
         .action(() => {
-          console.error('错误: 配置未初始化');
-          console.log('请先运行: qcc init --authorization "Bearer YOUR_API_KEY"');
+          printMcpConfigError(configError);
           process.exit(1);
         })
         .on('command:*', () => {
-          console.error('错误: 配置未初始化');
-          console.log('请先运行: qcc init --authorization "Bearer YOUR_API_KEY"');
+          printMcpConfigError(configError);
           process.exit(1);
         });
     });
@@ -418,20 +447,20 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         .command(shortName)
         .description(`${serverConfig?.name || shortName}`)
         .action(() => {
-          console.error('错误: 工具列表获取失败');
+          console.error(chalk.red('错误: 工具列表获取失败'));
           if (authFailed) {
-            console.log('请检查 Authorization 是否正确，或运行 qcc init 更新配置');
+            console.log(chalk.yellow('建议: 请检查 Authorization 是否正确，或运行 qcc init 更新配置'));
           } else {
-            console.log('请检查网络连接，或稍后重试');
+            console.log(chalk.yellow('建议: 请检查网络连接，或稍后重试'));
           }
           process.exit(1);
         })
         .on('command:*', () => {
-          console.error('错误: 工具列表获取失败');
+          console.error(chalk.red('错误: 工具列表获取失败'));
           if (authFailed) {
-            console.log('请检查 Authorization 是否正确，或运行 qcc init 更新配置');
+            console.log(chalk.yellow('建议: 请检查 Authorization 是否正确，或运行 qcc init 更新配置'));
           } else {
-            console.log('请检查网络连接，或稍后重试');
+            console.log(chalk.yellow('建议: 请检查网络连接，或稍后重试'));
           }
           process.exit(1);
         });
@@ -447,13 +476,13 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         .command(shortName)
         .description(`${serverConfig?.name || shortName}`)
         .action(() => {
-          console.error('错误: 工具列表为空');
-          console.log('请检查身份凭证是否有效: qcc init --authorization "Bearer YOUR_API_KEY"');
+          console.error(chalk.red('错误: 工具列表为空'));
+          console.log(chalk.yellow('建议: 请检查身份凭证是否有效: qcc init --authorization "Bearer YOUR_API_KEY"'));
           process.exit(1);
         })
         .on('command:*', () => {
-          console.error('错误: 工具列表为空');
-          console.log('请检查身份凭证是否有效: qcc init --authorization "Bearer YOUR_API_KEY"');
+          console.error(chalk.red('错误: 工具列表为空'));
+          console.log(chalk.yellow('建议: 请检查身份凭证是否有效: qcc init --authorization "Bearer YOUR_API_KEY"'));
           process.exit(1);
         });
     });
@@ -487,7 +516,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
           }
         }
 
-        console.error('错误: 请指定要使用的工具');
+        console.error(chalk.red('错误: 请指定要使用的工具'));
         printToolUsageHints(shortName);
         if (refreshedTools.length > 0) {
           console.log('\n可用工具:');
@@ -514,7 +543,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
           return;
         }
 
-        console.error(`错误: 服务 "${shortName}" 中未找到工具 "${operands[0]}"`);
+        console.error(chalk.red(`错误: 服务 "${shortName}" 中未找到工具 "${operands[0]}"`));
         printToolUsageHints(shortName);
         if (tools.length > 0) {
           console.log('\n可用工具:');
@@ -540,7 +569,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         .exitOverride((err) => {
           if (err.code === 'commander.unknownOption') {
             const option = err.message.match(/'([^']+)'/)?.[1] || err.message;
-            console.error(`错误: 未知选项 ${option}`);
+            console.error(chalk.red(`错误: 未知选项 ${option}`));
             const userParams = getToolExampleParamsFromArgv(tool, process.argv.slice(4));
             printToolCommandHelp(shortName, tool, userParams);
             process.exit(1);
@@ -548,7 +577,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
 
           if (err.code === 'commander.optionMissingArgument') {
             const option = err.message.match(/'([^']+)'/)?.[1] || '参数';
-            console.error(`错误: 选项 ${option} 缺少值`);
+            console.error(chalk.red(`错误: 选项 ${option} 缺少值`));
             const userParams = getToolExampleParamsFromArgv(tool, process.argv.slice(4));
             printToolCommandHelp(shortName, tool, userParams);
             process.exit(1);
@@ -620,7 +649,7 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
         const tool = tools.find((item) => item.name === arg2);
 
         if (!tool) {
-          console.error(`错误: 服务 ${arg1} 中未找到工具 ${arg2}`);
+          console.error(chalk.red(`错误: 服务 ${arg1} 中未找到工具 ${arg2}`));
           printToolUsageHints(arg1);
           process.exit(1);
         }
@@ -635,9 +664,9 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
           return;
         }
 
-        console.error('错误: 请提供工具参数');
-        console.log(`\n用法: qcc ${arg1} ${arg2} "<默认参数值>"`);
-        console.log(`      qcc ${arg1} ${arg2} --<参数名> <参数值> [--<参数名> <参数值> ...]`);
+        console.error(chalk.red('错误: 请提供工具参数'));
+        console.log(chalk.yellow(`\n建议用法: qcc ${arg1} ${arg2} "<默认参数值>"`));
+        console.log(chalk.yellow(`          qcc ${arg1} ${arg2} --<参数名> "<参数值>" [--<参数名> "<参数值>" ...]`));
         console.log('\n参数说明:');
         Object.entries(props).forEach(([key, value]) => {
           const req = required.includes(key) ? '(必填)' : '(可选)';
@@ -648,8 +677,8 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
       }
 
       if (arg1) {
-        console.error(`错误: 未知命令或服务 ${arg1}`);
-        console.log('\n可用命令:');
+        console.error(chalk.red(`错误: 未知命令或服务 ${arg1}`));
+        console.log(chalk.yellow('\n可用命令:'));
         console.log('  qcc init          初始化配置');
         console.log('  qcc list-tools    显示 MCP 工具列表');
         console.log('  qcc update        更新工具信息缓存');
@@ -691,7 +720,7 @@ function handleInvalidToolInvocation(argv = [], useFallback = false) {
     return;
   }
 
-  console.error(`错误: 服务 "${serverName}" 中未找到工具 "${toolName}"`);
+  console.error(chalk.red(`错误: 服务 "${serverName}" 中未找到工具 "${toolName}"`));
   printToolUsageHints(serverName);
 
   console.log('\n可用工具:');
@@ -767,7 +796,7 @@ async function createProgram(argv = process.argv.slice(2)) {
     try {
       const success = await mcpService.ensureToolsCache();
       if (success) {
-        console.log(chalk.gray('缓存更新完成。\n'));
+        console.log(chalk.green('✓ 缓存更新完成。\n'));
       } else {
         useFallback = true;
         const failureSummary = mcpService.getLastUpdateFailureSummary();
@@ -818,8 +847,8 @@ async function createProgram(argv = process.argv.slice(2)) {
 function setupGlobalErrorHandler(program) {
   program.on('command:*', (operands) => {
     const unknownCmd = operands[0];
-    console.error(`错误: 未知命令或服务 "${unknownCmd}"`);
-    console.log('\n可用命令:');
+    console.error(chalk.red(`错误: 未知命令或服务 "${unknownCmd}"`));
+    console.log(chalk.yellow('\n可用命令:'));
     console.log('  qcc init          初始化配置');
     console.log('  qcc list-tools    显示 MCP 工具列表');
     console.log('  qcc update        更新工具信息缓存');
@@ -832,7 +861,7 @@ function setupGlobalErrorHandler(program) {
       const cfg = mcpService.getServerByShortName(name);
       console.log(`  ${name.padEnd(12)} ${cfg?.name || ''}`);
     });
-    console.log('\n使用 "qcc --help" 查看更多帮助');
+    console.log(chalk.yellow('\n建议: 使用 "qcc --help" 查看更多帮助'));
     process.exit(1);
   });
 }

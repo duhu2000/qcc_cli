@@ -46,7 +46,7 @@ describe('document parse command progress notice', () => {
     idpService.parseDocument.mockReturnValueOnce(deferred.promise);
 
     const commandPromise = parseDocument({
-      file_url: 'https://files.example.com/sample.pdf'
+      file_url: 'https://files.qcc.com/sample.pdf'
     });
 
     expect(stderrSpy).not.toHaveBeenCalled();
@@ -72,7 +72,7 @@ describe('document parse command progress notice', () => {
     idpService.parseDocument.mockReturnValueOnce(deferred.promise);
 
     const commandPromise = parseDocument({
-      file_url: 'https://files.example.com/sample.pdf',
+      file_url: 'https://files.qcc.com/sample.pdf',
       wait: true
     });
 
@@ -85,5 +85,22 @@ describe('document parse command progress notice', () => {
 
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(result, null, 2));
     expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining('正在提交文档解析任务并等待文档解析结果，请稍候...'));
+  });
+
+  test('rejects unsafe URL before service call and progress timer', async () => {
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => undefined);
+
+    await parseDocument({
+      file_url: 'http://127.0.0.1/private.pdf?token=secret'
+    });
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(idpService.parseDocument).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining('URL 文件不可获取、不可识别或不满足解析限制，请检查 URL 后重试。')
+    );
+    expect(JSON.stringify(stderrSpy.mock.calls)).not.toMatch(/127\.0\.0\.1|token=secret/u);
+    expect(stdoutSpy).not.toHaveBeenCalled();
   });
 });
