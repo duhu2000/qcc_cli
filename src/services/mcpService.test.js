@@ -3,6 +3,36 @@
 const mcpService = require('./mcpService');
 
 describe('MCP server registry', () => {
+  test('keeps the public MCP servers in the expected display order', () => {
+    expect(mcpService.getShortServerNames()).toEqual([
+      'company',
+      'risk',
+      'operation',
+      'ipr',
+      'history',
+      'executive',
+      'regulation',
+      'case',
+      'tender'
+    ]);
+  });
+
+  test('includes the tender server for generic MCP calls', () => {
+    expect(mcpService.getShortServerNames()).toContain('tender');
+
+    expect(mcpService.getServerInfo('tender')).toEqual(expect.objectContaining({
+      fullName: 'qcc_tender',
+      displayName: '标讯数据',
+      description: '提供招投标标讯与拟建项目的搜索、详情查询，以及企业搜索和企业相关招投标查询服务。',
+      endpoint: '/tender/stream'
+    }));
+
+    expect(mcpService.resolveServerConfig('qcc_tender')).toEqual(expect.objectContaining({
+      shortName: 'tender',
+      endpoint: '/tender/stream'
+    }));
+  });
+
   test('includes legal regulation and case servers', () => {
     expect(mcpService.getShortServerNames()).toEqual(expect.arrayContaining([
       'regulation',

@@ -4,20 +4,20 @@
     "description": "提供工商登记维度的结构化数据，以事实记录为基准，从源头压制 AI 幻觉风险。",
     "endpoint": "/company/stream"
   },
-  "qcc_ipr": {
-    "name": "知识产权",
-    "description": "通过招投标流水、新闻舆情脱水处理，有助于优化 Token 消耗，快速了解企业经营动态。",
-    "endpoint": "/ipr/stream"
+  "qcc_risk": {
+    "name": "风险信息",
+    "description": "覆盖失信、被执行、严重违法等核心红线。触发即熔断，同步输出穿透关联分析，帮助 Agent 在风险节点自动止损。",
+    "endpoint": "/risk/stream"
   },
   "qcc_operation": {
     "name": "经营信息",
     "description": "精准评估企业专利、软著与资质含量，为科技认证、招投标、资产评估提供数据支撑。",
     "endpoint": "/operation/stream"
   },
-  "qcc_risk": {
-    "name": "风险信息",
-    "description": "覆盖失信、被执行、严重违法等核心红线。触发即熔断，同步输出穿透关联分析，帮助 Agent 在风险节点自动止损。",
-    "endpoint": "/risk/stream"
+  "qcc_ipr": {
+    "name": "知识产权",
+    "description": "通过招投标流水、新闻舆情脱水处理，有助于优化 Token 消耗，快速了解企业经营动态。",
+    "endpoint": "/ipr/stream"
   },
   "qcc_history": {
     "name": "历史信息",
@@ -38,5 +38,10 @@
     "name": "司法案例",
     "description": "海量普通裁判文书 + 2.5 万条权威案例（指导性 / 公报 / 典型），按争议焦点与裁判观点聚类，正反向观点一目了然。",
     "endpoint": "/case/stream"
+  },
+  "qcc_tender": {
+    "name": "标讯数据",
+    "description": "提供招投标标讯与拟建项目的搜索、详情查询，以及企业搜索和企业相关招投标查询服务。",
+    "endpoint": "/tender/stream"
   }
 }

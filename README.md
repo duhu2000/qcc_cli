@@ -10,11 +10,11 @@
 
 ## 📖 项目简介
 
-`qcc-agent-cli` 是企查查官方推出的命令行工具，旨在帮助开发者和 AI Agent 快速访问企业工商信息、知识产权、经营风险等全维度商业数据。
+`qcc-agent-cli` 是企查查官方推出的命令行工具，旨在帮助开发者和 AI Agent 快速访问企业工商信息、知识产权、经营风险、招投标与拟建项目等全维度商业数据。
 
 **核心能力**：
-- 🎯 **6 大服务域**：企业信息、风险信息、经营信息、知识产权、历史信息、董监高
-- 🔧 **179 个查询工具**：覆盖工商、董监高、历史沿革、专利商标、经营动态、司法风险等场景
+- 🎯 **多服务域覆盖**：企业信息、风险信息、经营信息、知识产权、历史信息、董监高、法律数据、标讯数据与智能文档解析
+- 🔧 **201 个查询工具**：覆盖企业、法律、司法案例与招投标等数据查询场景，实际数量以 `qcc list-tools` 为准
 - 🤖 **AI Agent 友好**：Markdown 格式化输出、Schema 自省、参数自动验证
 - 🔒 **安全可控**：配置隔离、敏感信息脱敏
 
@@ -57,16 +57,21 @@
 
 ## ⚡ 功能特性
 
-### 核心服务矩阵
+### 数据服务矩阵
 
 | 服务标识 | 服务名称 | 工具数 | 典型场景 | 文档 |
 | :---: | :---: | :---: | :--- | :--- |
-| `company` | 企业信息 | 15 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
-| `risk` | 风险信息 | 35 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
+| `company` | 企业信息 | 16 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
+| `risk` | 风险信息 | 38 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
 | `operation` | 经营信息 | 35 | 经营动态、资质许可、融资、舆情、监管与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
 | `ipr` | 知识产权 | 18 | 商标、专利、软著、应用产品、社媒账号与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
 | `history` | 历史信息 | 34 | 历史沿革追溯、历史风险回溯、历史股权与司法记录核查 | [查看文档](./docs/query-manual/history.md) |
-| `executive` | 董监高 | 42 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
+| `executive` | 董监高 | 44 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
+| `regulation` | 法律法规 | 6 | 法规检索、法条定位、引用核验与修订沿革查询 | `qcc list-tools regulation` |
+| `case` | 司法案例 | 4 | 类案检索、裁判文书详情与司法引用核验 | `qcc list-tools case` |
+| `tender` | 标讯数据 | 6 | 招投标搜索、拟建项目查询、企业搜索与企业招投标查询 | [查看文档](./docs/query-manual/tender.md) |
+
+除上述数据查询服务外，`document` 提供本机文件、在线链接的文档解析及异步结果查询能力，详见[文档解析任务提交与结果查询](#文档解析任务提交与结果查询)。
 
 -----
 
@@ -140,6 +145,13 @@ qcc company get_company_registration_info "企查查科技股份有限公司"
 qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 ```
 
+工具定义通常会自动同步。服务端工具发生变化但本地尚未生效时，可手动刷新缓存；需要查看当前服务支持的工具及参数时，可查询对应服务的工具列表：
+
+```bash
+qcc update
+qcc list-tools <server>
+```
+
 ### 文档解析任务提交与结果查询
 
 提供专用 `document` 命令，用于提交本地文件或 HTTP(S) 文档 URL 创建解析任务，并根据 `task_id` 查询解析状态和 Markdown 结果。命令默认输出 JSON，便于脚本和 Agent 继续处理。
@@ -181,7 +193,7 @@ qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 ```
 
 **参数说明：**
-- `server`：服务标识（`company` / `risk` / `operation` / `ipr` / `history` / `executive`）
+- `server`：服务标识（`company` / `risk` / `operation` / `ipr` / `history` / `executive` / `regulation` / `case` / `tender`）
 - `tool`：工具名称，可通过 `qcc list-tools <server>` 获取
 - `--paramKey`：参数键，如 `--searchKey`、`--personName`、`--year`、`--role`
 - `paramValue`：参数值，如企业名称、统一社会信用代码、人员姓名、年份、日期或状态过滤值
@@ -195,12 +207,15 @@ qcc <server> <tool> --<paramKey> "<paramValue>" [--<filterKey> "<filterValue>"]
 
 | 服务标识 | 服务名称 | 工具数 | 典型场景 | 文档 |
 | :---: | :---: | :---: | :--- | :--- |
-| `company` | 企业信息 | 15 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
-| `risk` | 风险信息 | 35 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
+| `company` | 企业信息 | 16 | 企业画像、工商核验、股权结构与财务概览 | [查看文档](./docs/query-manual/company.md) |
+| `risk` | 风险信息 | 38 | 司法风险、信用风险、税务风险、担保与资产受限排查 | [查看文档](./docs/query-manual/risk.md) |
 | `operation` | 经营信息 | 35 | 经营动态、资质许可、融资、舆情、监管与市场活动分析 | [查看文档](./docs/query-manual/operation.md) |
 | `ipr` | 知识产权 | 18 | 商标、专利、软著、应用产品、社媒账号与网络服务备案分析 | [查看文档](./docs/query-manual/ipr.md) |
 | `history` | 历史信息 | 34 | 历史沿革追溯、历史风险回溯、历史股权与司法记录核查 | [查看文档](./docs/query-manual/history.md) |
-| `executive` | 董监高 | 42 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
+| `executive` | 董监高 | 44 | 董监高任职穿透、个人风险核查、关联企业识别 | [查看文档](./docs/query-manual/executive.md) |
+| `regulation` | 法律法规 | 6 | 法规检索、法条定位、引用核验与修订沿革查询 | `qcc list-tools regulation` |
+| `case` | 司法案例 | 4 | 类案检索、裁判文书详情与司法引用核验 | `qcc list-tools case` |
+| `tender` | 标讯数据 | 6 | 招投标搜索、拟建项目查询、企业搜索与企业招投标查询 | [查看文档](./docs/query-manual/tender.md) |
 
 各服务的工具说明已拆分到独立文档，便于按需查阅和后续维护。
 

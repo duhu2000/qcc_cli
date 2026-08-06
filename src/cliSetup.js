@@ -4,7 +4,7 @@
  */
 
 const fs = require('fs');
-const { Command } = require('commander');
+const { Command, Help } = require('commander');
 const chalk = require('chalk');
 const { version } = require('../package.json');
 const listToolsCommand = require('./commands/list-tools');
@@ -23,6 +23,21 @@ const {
   getCachedToolsWithFallback
 } = require('./utils/cacheUtils');
 const { buildToolCommandExample, getArrayParamHint } = require('./utils/commandExample');
+
+const ROOT_HELP_SERVICE_GROUPS = [
+  {
+    title: '企业数据',
+    serverNames: ['company', 'risk', 'operation', 'ipr', 'history', 'executive']
+  },
+  {
+    title: '法律数据',
+    serverNames: ['regulation', 'case']
+  },
+  {
+    title: '标讯数据',
+    serverNames: ['tender']
+  }
+];
 
 function getServerTools(serverName) {
   return getServerToolsFromCache(serverName);
@@ -104,36 +119,126 @@ function printToolUsageHints(serverName) {
   console.log(chalk.yellow('或运行 "qcc update" 更新工具列表'));
 }
 
-function getRootHelpText() {
-  const shortServerNames = [...mcpService.getShortServerNames(), 'document'];
-  const serviceList = shortServerNames.join(' / ');
+function formatHelpEntries(entries) {
+  const width = Math.max(14, Math.max(...entries.map(({ term }) => term.length)) + 4);
+  return entries.map(({ term, description }) => `  ${term.padEnd(width)}${description}`);
+}
 
-  return `
-查询调用:
-  qcc <server> <tool> "<默认参数值>"
-  qcc <server> <tool> --<参数名> "<参数值>" [--<参数名> "<参数值>" ...]
-  qcc <server> <tool> --json --<参数名> "<参数值>"
-  数组参数可传单个值；多个值请重复传入同一选项，例如 --role "原告" --role "被告"
+function getRootHelpCommand(program, name) {
+  return program.commands.find((command) => command.name() === name);
+}
 
-常用命令:
-  qcc list-tools
-  qcc list-tools <server>
-  qcc <server> <tool> --help
-  qcc document parse_document --file_path "<path>" [--wait]
-  qcc document parse_document --file_url "<http-url>" [--wait]
-  qcc document get_parse_result "<task_id>"
+function getServiceHelpSections(program) {
+  const groupedServerNames = new Set(
+    ROOT_HELP_SERVICE_GROUPS.flatMap(({ serverNames }) => serverNames)
+  );
+  const ungroupedServerNames = mcpService.getShortServerNames()
+    .filter((name) => !groupedServerNames.has(name));
+  const groups = ungroupedServerNames.length > 0
+    ? [...ROOT_HELP_SERVICE_GROUPS, { title: '其他数据', serverNames: ungroupedServerNames }]
+    : ROOT_HELP_SERVICE_GROUPS;
 
-服务标识:
-  ${serviceList}
+  return groups.flatMap(({ title, serverNames }) => {
+    const entries = serverNames
+      .filter((name) => getRootHelpCommand(program, name))
+      .map((name) => ({
+        term: name,
+        description: mcpService.getServerByShortName(name)?.name || name
+      }));
 
-示例:
-  qcc company get_company_registration_info "企查查科技股份有限公司"
-  qcc company verify_company_accuracy --searchKey "企查查科技股份有限公司" --name "法定代表人姓名"
-  qcc risk get_court_notice --searchKey "企查查科技股份有限公司" --role "原告" --role "被告" --notice_type "起诉状、上诉状副本" --year "2026"
-  qcc document parse_document --file_path "./sample.pdf"
-  qcc document parse_document --file_url "https://files.qcc.com/sample.pdf" --wait
-  qcc document get_parse_result "qcc_task_id"
-`;
+    return entries.length > 0 ? [`${title}:`, ...formatHelpEntries(entries), ''] : [];
+  });
+}
+
+function getManagementHelpSection(program, title, commandSpecs) {
+  const entries = commandSpecs.flatMap(({ name, term }) => {
+    const command = getRootHelpCommand(program, name);
+    return command ? [{ term, description: command.description() }] : [];
+  });
+
+  return [`${title}:`, ...formatHelpEntries(entries), ''];
+}
+
+function formatRootHelp(program) {
+  return [
+    '企查查智能体数据平台 CLI',
+    '',
+    'Usage:',
+    '  qcc <server> <tool> [参数...]',
+    '  qcc <command> [参数...]',
+    '  qcc [options]',
+    '',
+    '首次使用:',
+    '',
+    '  # 绑定 API Key（一次性操作）',
+    '  qcc init --authorization "Bearer YOUR_API_KEY"',
+    '',
+    ...getServiceHelpSections(program),
+    '智能文档解析:',
+    ...formatHelpEntries([{
+      term: 'document',
+      description: getRootHelpCommand(program, 'document')?.description() || '文档解析任务提交与结果查询'
+    }]),
+    '',
+    ...getManagementHelpSection(program, '工具管理', [
+      { name: 'list-tools', term: 'list-tools [server]' },
+      { name: 'update', term: 'update' }
+    ]),
+    ...getManagementHelpSection(program, '配置与诊断', [
+      { name: 'init', term: 'init [options]' },
+      { name: 'check', term: 'check' },
+      { name: 'config', term: 'config' }
+    ]),
+    '调用格式:',
+    '  qcc <server> <tool> "<默认参数值>"',
+    '  qcc <server> <tool> --<参数名> "<参数值>" [--<参数名> "<参数值>" ...]',
+    '  qcc <server> <tool> --json --<参数名> "<参数值>"',
+    '',
+    '参数说明:',
+    '  仅传一个业务参数时，默认参数自动映射到工具的主要查询参数。',
+    '  多参数调用必须显式指定所有参数名，不支持默认参数与命名参数混用。',
+    '  数组参数可传单个值；多个值请重复传入同一选项。',
+    '  通用 MCP 工具可追加 --json 输出原始 JSON。',
+    '',
+    '数据查询示例:',
+    '',
+    '  # 查询企业工商登记信息',
+    '  qcc company get_company_registration_info "企查查科技股份有限公司"',
+    '',
+    '  # 法律法规 · 法规检索',
+    '  qcc regulation get_legal_regulation_search "数据出境"',
+    '',
+    '  # 司法案例 · 类案检索',
+    '  qcc case get_judicial_case_search "卖方违约的买卖合同纠纷判决"',
+    '',
+    '  # 标讯数据 · 招投标搜索',
+    '  qcc tender search_tenders "智慧工地"',
+    '',
+    '  # 智能文档解析 · 本机文件或在线链接',
+    '  qcc document parse_document --file_path "./财报.pdf"',
+    '  qcc document parse_document --file_url "https://example.com/财报.pdf"',
+    '',
+    '  # 长文档异步 · 按任务编号查询结果',
+    '  qcc document get_parse_result "TASK_ID"',
+    '',
+    '获取更多帮助:',
+    '  qcc list-tools',
+    '  qcc list-tools <server>',
+    '  qcc <server> <tool> --help',
+    '  qcc document --help',
+    '',
+    'Options:',
+    '  -V, --version    显示版本号',
+    '  -h, --help       显示帮助信息',
+    ''
+  ].join('\n');
+}
+
+function formatCliHelp(command, helper) {
+  if (command.parent) {
+    return Help.prototype.formatHelp.call(helper, command, helper);
+  }
+  return formatRootHelp(command);
 }
 
 function getSchemaType(propDef = {}) {
@@ -142,6 +247,39 @@ function getSchemaType(propDef = {}) {
     return type.find((item) => item !== 'null');
   }
   return type;
+}
+
+function getDefaultParamKey(tool) {
+  const props = tool.inputSchema?.properties || {};
+  const required = tool.inputSchema?.required || [];
+
+  if (props.searchKey) {
+    return 'searchKey';
+  }
+  if (props.keyword) {
+    return 'keyword';
+  }
+  if (props.keywords) {
+    return 'keywords';
+  }
+  return required[0];
+}
+
+function applyDefaultParam(tool, params, defaultValue) {
+  const defaultParamKey = getDefaultParamKey(tool);
+  if (
+    !defaultParamKey
+    || defaultValue === undefined
+    || Object.prototype.hasOwnProperty.call(params, defaultParamKey)
+  ) {
+    return defaultParamKey;
+  }
+
+  const propDef = tool.inputSchema?.properties?.[defaultParamKey] || {};
+  params[defaultParamKey] = getSchemaType(propDef) === 'array' && !Array.isArray(defaultValue)
+    ? [defaultValue]
+    : defaultValue;
+  return defaultParamKey;
 }
 
 function appendParamValue(params, key, value) {
@@ -165,10 +303,29 @@ function collectRepeatableOptionValue(value, previous) {
   return [...values, value];
 }
 
-function parseToolInvocationArgs(tool, argv = []) {
+function printDefaultParamUsageError(serverName, toolName) {
+  console.error(chalk.red('错误: 默认参数简写仅支持单个业务参数'));
+  console.log(chalk.yellow('建议: 多参数调用请显式指定所有参数名'));
+  console.log(chalk.gray(`  qcc ${serverName} ${toolName} --help`));
+  process.exit(1);
+}
+
+function validateDefaultParamUsage(serverName, toolName, params, positionalArgs) {
+  const hasMultiplePositionalArgs = positionalArgs.length > 1;
+  const mixesDefaultAndNamedParams = positionalArgs.length > 0 && Object.keys(params).length > 0;
+
+  if (!hasMultiplePositionalArgs && !mixesDefaultAndNamedParams) {
+    return true;
+  }
+
+  printDefaultParamUsageError(serverName, toolName);
+  return false;
+}
+
+function parseToolInvocationArgs(serverName, tool, argv = []) {
   const params = {};
   let json = false;
-  let positionalArg;
+  const positionalArgs = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -199,18 +356,14 @@ function parseToolInvocationArgs(tool, argv = []) {
       continue;
     }
 
-    if (positionalArg === undefined) {
-      positionalArg = token;
-    }
+    positionalArgs.push(token);
   }
 
-  const props = tool.inputSchema?.properties || {};
-  const required = tool.inputSchema?.required || [];
-  const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
-
-  if (defaultParamKey && positionalArg !== undefined && !params[defaultParamKey]) {
-    params[defaultParamKey] = positionalArg;
+  if (!validateDefaultParamUsage(serverName, tool.name, params, positionalArgs)) {
+    return { params, json };
   }
+
+  applyDefaultParam(tool, params, positionalArgs[0]);
 
   return { params, json };
 }
@@ -315,7 +468,7 @@ function registerStaticCommands(program) {
   withStrictOptionValidation(
     program
       .command('init')
-      .description('初始化配置')
+      .description('初始化连接配置')
       .option('--mcpBaseUrl <url>', 'MCP 服务基础地址')
       .option('--authorization <token>', 'MCP Authorization Token')
       .action((options) => {
@@ -326,7 +479,7 @@ function registerStaticCommands(program) {
   withStrictOptionValidation(
     program
       .command('list-tools [serverName]')
-      .description('显示 MCP 工具列表')
+      .description('显示服务或工具列表')
       .action((serverName) => {
         listToolsCommand.listTools(serverName);
       })
@@ -366,7 +519,7 @@ function registerStaticCommands(program) {
   withStrictOptionValidation(
     program
       .command('update')
-      .description('从 MCP 服务更新工具信息缓存')
+      .description('更新 MCP 工具定义缓存')
       .action(async () => {
         await updateTools();
       })
@@ -384,7 +537,7 @@ function registerStaticCommands(program) {
   const configCmd = withStrictOptionValidation(
     program
       .command('config')
-      .description('配置管理')
+      .description('查看或修改配置')
       .action(() => {
         configCommand.listConfig();
       })
@@ -510,7 +663,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         if (requestedToolName && !requestedToolName.startsWith('-')) {
           const matchedTool = refreshedTools.find((tool) => tool.name === requestedToolName);
           if (matchedTool) {
-            const invocation = parseToolInvocationArgs(matchedTool, process.argv.slice(4));
+            const invocation = parseToolInvocationArgs(shortName, matchedTool, process.argv.slice(4));
             await callMcpCommand(shortName, matchedTool.name, invocation.params, { json: invocation.json });
             return;
           }
@@ -538,7 +691,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         const tools = getServerToolsFromCache(shortName);
         const tool = tools.find((item) => item.name === operands[0]);
         if (tool) {
-          const invocation = parseToolInvocationArgs(tool, process.argv.slice(4));
+          const invocation = parseToolInvocationArgs(shortName, tool, process.argv.slice(4));
           await callMcpCommand(shortName, tool.name, invocation.params, { json: invocation.json });
           return;
         }
@@ -562,6 +715,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
       const toolCmd = serverCmd
         .command(tool.name)
         .description(tool.description || '')
+        .allowExcessArguments(false)
         .addHelpText('after', () => getToolCommandExampleHelpText(shortName, tool))
         .configureOutput({
           writeErr: () => {}
@@ -581,6 +735,10 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
             const userParams = getToolExampleParamsFromArgv(tool, process.argv.slice(4));
             printToolCommandHelp(shortName, tool, userParams);
             process.exit(1);
+          }
+
+          if (err.code === 'commander.excessArguments') {
+            printDefaultParamUsageError(shortName, tool.name);
           }
 
           throw err;
@@ -603,7 +761,7 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         }
       });
 
-      const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
+      const defaultParamKey = getDefaultParamKey(tool);
       if (defaultParamKey) {
         toolCmd.argument('[defaultValue]', `默认参数，映射到 --${defaultParamKey}`);
       }
@@ -613,9 +771,12 @@ function registerMcpCommands(program, useFallback = false, authFailed = false) {
         const defaultValue = defaultParamKey ? actionArgs[0] : undefined;
         const { json, ...params } = command.opts();
 
-        if (defaultParamKey && defaultValue !== undefined && !params[defaultParamKey]) {
-          params[defaultParamKey] = defaultValue;
+        const positionalArgs = defaultValue === undefined ? [] : [defaultValue];
+        if (!validateDefaultParamUsage(shortName, tool.name, params, positionalArgs)) {
+          return;
         }
+
+        applyDefaultParam(tool, params, defaultValue);
 
         await callMcpCommand(shortName, tool.name, params, { json });
       });
@@ -656,10 +817,10 @@ function registerDefaultHandler(program, argv = process.argv.slice(2)) {
 
         const props = tool.inputSchema?.properties || {};
         const required = tool.inputSchema?.required || [];
-        const defaultParamKey = props.searchKey ? 'searchKey' : props.keyword ? 'keyword' : required[0];
+        const defaultParamKey = getDefaultParamKey(tool);
 
         if (toolArgs.length > 0) {
-          const invocation = parseToolInvocationArgs(tool, toolArgs);
+          const invocation = parseToolInvocationArgs(arg1, tool, toolArgs);
           await callMcpCommand(arg1, arg2, invocation.params, { json: invocation.json });
           return;
         }
@@ -761,16 +922,28 @@ function showMissingConfigInitMessage() {
   console.error(chalk.red('错误: 配置文件不存在，运行 qcc init 进行初始化'));
 }
 
+function orderPublicCommands(program) {
+  const publicServiceNames = [...mcpService.getShortServerNames(), 'document'];
+  const publicServiceNameSet = new Set(publicServiceNames);
+  const commandsByName = new Map(program.commands.map((command) => [command.name(), command]));
+
+  program.commands = [
+    ...program.commands.filter((command) => !publicServiceNameSet.has(command.name())),
+    ...publicServiceNames.map((name) => commandsByName.get(name)).filter(Boolean)
+  ];
+}
+
 async function createProgram(argv = process.argv.slice(2)) {
   const program = new Command();
 
   program
     .name('qcc')
-    .description('企业信息查询 CLI 工具')
+    .description('企查查智能体数据平台 CLI')
     .usage('[options] [command|service] [tool] [args...]')
-    .version(version)
+    .version(version, '-V, --version', '显示版本号')
+    .helpOption('-h, --help', '显示帮助信息')
     .allowUnknownOption(true)
-    .addHelpText('after', getRootHelpText);
+    .configureHelp({ formatHelp: formatCliHelp });
 
   const configIntegrity = configService.checkConfigIntegrity();
   if (!configIntegrity.exists && !isConfigExemptCommand(argv)) {
@@ -781,6 +954,7 @@ async function createProgram(argv = process.argv.slice(2)) {
   if (!configService.isMcpConfigValid()) {
     registerStaticCommands(program);
     registerMcpCommands(program);
+    orderPublicCommands(program);
     registerDefaultHandler(program, argv);
     setupGlobalErrorHandler(program);
     return program;
@@ -837,6 +1011,7 @@ async function createProgram(argv = process.argv.slice(2)) {
 
   registerStaticCommands(program);
   registerMcpCommands(program, useFallback, authFailed);
+  orderPublicCommands(program);
   registerDefaultHandler(program, argv);
   setupGlobalErrorHandler(program);
   handleInvalidToolInvocation(argv, useFallback);
@@ -873,5 +1048,6 @@ module.exports = {
   registerDefaultHandler,
   handleInvalidToolInvocation,
   getServerTools,
+  orderPublicCommands,
   shouldSkipBootstrapCacheRefresh
 };

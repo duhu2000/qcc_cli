@@ -14,7 +14,15 @@ const updateConfigPath = path.join(
 );
 const isFirstUpdateCheck = !fs.existsSync(updateConfigPath);
 
-async function notifyUpdateIfAvailable() {
+function isHelpOrVersionInvocation(argv = []) {
+  return argv.some((arg) => ['--help', '-h', '--version', '-V'].includes(arg));
+}
+
+async function notifyUpdateIfAvailable(argv = []) {
+  if (process.env.NO_UPDATE_NOTIFIER || isHelpOrVersionInvocation(argv)) {
+    return;
+  }
+
   try {
     const updateNotifierModule = await import('update-notifier');
     const updateNotifier = updateNotifierModule.default || updateNotifierModule;
@@ -29,9 +37,10 @@ async function notifyUpdateIfAvailable() {
 }
 
 async function main() {
-  await notifyUpdateIfAvailable();
+  const argv = process.argv.slice(2);
+  await notifyUpdateIfAvailable(argv);
 
-  const program = await createProgram(process.argv.slice(2));
+  const program = await createProgram(argv);
 
   program.exitOverride((err) => {
     if (

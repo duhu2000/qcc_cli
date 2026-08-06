@@ -241,10 +241,10 @@ describe('MCP default positional parameter mapping', () => {
       isMcpConfigValid: () => true
     }));
     jest.doMock('./services/mcpService', () => ({
-      getShortServerNames: () => ['legal'],
+      getShortServerNames: () => ['legal', 'tender'],
       getServerByShortName: (name) => (
-        name === 'legal'
-          ? { name: 'Legal', description: 'Legal tools' }
+        ['legal', 'tender'].includes(name)
+          ? { name, description: `${name} tools` }
           : null
       ),
       getUpdateFailureSummary: () => null
@@ -309,6 +309,269 @@ describe('MCP default positional parameter mapping', () => {
     );
   });
 
+  test('maps a dynamic command default value to the optional keywords array', async () => {
+    cachedTools = [{
+      name: 'search_tenders',
+      description: 'Search tenders',
+      inputSchema: {
+        properties: {
+          keywords: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        }
+      }
+    }];
+    const { registerMcpCommands } = loadCliSetup();
+    const program = new Command();
+
+    registerMcpCommands(program);
+
+    await program.parseAsync(['node', 'qcc', 'tender', 'search_tenders', '智慧工地']);
+
+    expect(callMcp).toHaveBeenCalledWith(
+      'tender',
+      'search_tenders',
+      { keywords: ['智慧工地'] },
+      { json: undefined }
+    );
+  });
+
+  test('maps a fallback invocation default value to the optional keywords array', async () => {
+    cachedTools = [{
+      name: 'search_tenders',
+      description: 'Search tenders',
+      inputSchema: {
+        properties: {
+          keywords: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        }
+      }
+    }];
+    const { registerDefaultHandler } = loadCliSetup();
+    const program = new Command();
+
+    registerDefaultHandler(program, ['tender', 'search_tenders', '智慧工地']);
+
+    await program.parseAsync(['node', 'qcc', 'tender', 'search_tenders', '智慧工地']);
+
+    expect(callMcp).toHaveBeenCalledWith(
+      'tender',
+      'search_tenders',
+      { keywords: ['智慧工地'] },
+      { json: false }
+    );
+  });
+
+  test('allows a single default value with the json output option', async () => {
+    cachedTools = [{
+      name: 'search_tenders',
+      description: 'Search tenders',
+      inputSchema: {
+        properties: {
+          keywords: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        }
+      }
+    }];
+    const { registerMcpCommands } = loadCliSetup();
+    const program = new Command();
+
+    registerMcpCommands(program);
+
+    await program.parseAsync([
+      'node',
+      'qcc',
+      'tender',
+      'search_tenders',
+      '智慧工地',
+      '--json'
+    ]);
+
+    expect(callMcp).toHaveBeenCalledWith(
+      'tender',
+      'search_tenders',
+      { keywords: ['智慧工地'] },
+      { json: true }
+    );
+  });
+
+  test('supports multiple business parameters when every parameter is named', async () => {
+    cachedTools = [{
+      name: 'search_company_tenders',
+      description: 'Search company tenders',
+      inputSchema: {
+        properties: {
+          id: { type: 'string' },
+          keywords: { type: 'array', items: { type: 'string' } },
+          role: { type: 'string' }
+        },
+        required: ['id']
+      }
+    }];
+    const { registerMcpCommands } = loadCliSetup();
+    const program = new Command();
+
+    registerMcpCommands(program);
+
+    await program.parseAsync([
+      'node',
+      'qcc',
+      'tender',
+      'search_company_tenders',
+      '--id',
+      '企业ID',
+      '--role',
+      '3'
+    ]);
+
+    expect(callMcp).toHaveBeenCalledWith(
+      'tender',
+      'search_company_tenders',
+      { id: '企业ID', role: '3' },
+      { json: undefined }
+    );
+  });
+
+  test('rejects a dynamic command that mixes a default value with a named business parameter', async () => {
+    cachedTools = [{
+      name: 'search_company_tenders',
+      description: 'Search company tenders',
+      inputSchema: {
+        properties: {
+          id: { type: 'string' },
+          keywords: { type: 'array', items: { type: 'string' } },
+          role: { type: 'string' }
+        },
+        required: ['id']
+      }
+    }];
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`EXIT:${code}`);
+    });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const { registerMcpCommands } = loadCliSetup();
+      const program = new Command();
+      registerMcpCommands(program);
+
+      await expect(program.parseAsync([
+        'node',
+        'qcc',
+        'tender',
+        'search_company_tenders',
+        '企业ID',
+        '--role',
+        '3'
+      ])).rejects.toThrow('EXIT:1');
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '默认参数简写仅支持单个业务参数'
+      ));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '多参数调用请显式指定所有参数名'
+      ));
+      expect(callMcp).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  test('rejects a fallback invocation that mixes a default value with a named business parameter', async () => {
+    cachedTools = [{
+      name: 'search_company_tenders',
+      description: 'Search company tenders',
+      inputSchema: {
+        properties: {
+          id: { type: 'string' },
+          keywords: { type: 'array', items: { type: 'string' } },
+          role: { type: 'string' }
+        },
+        required: ['id']
+      }
+    }];
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`EXIT:${code}`);
+    });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const { registerDefaultHandler } = loadCliSetup();
+      const program = new Command();
+      registerDefaultHandler(program, [
+        'tender',
+        'search_company_tenders',
+        '企业ID',
+        '--role',
+        '3'
+      ]);
+
+      await expect(program.parseAsync(['node', 'qcc'])).rejects.toThrow('EXIT:1');
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '默认参数简写仅支持单个业务参数'
+      ));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '多参数调用请显式指定所有参数名'
+      ));
+      expect(callMcp).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  test('rejects a dynamic command with more than one positional business parameter', async () => {
+    cachedTools = [{
+      name: 'search_tenders',
+      description: 'Search tenders',
+      inputSchema: {
+        properties: {
+          keywords: { type: 'array', items: { type: 'string' } }
+        }
+      }
+    }];
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`EXIT:${code}`);
+    });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const { registerMcpCommands } = loadCliSetup();
+      const program = new Command();
+      registerMcpCommands(program);
+
+      await expect(program.parseAsync([
+        'node',
+        'qcc',
+        'tender',
+        'search_tenders',
+        '智慧工地',
+        '数字政府'
+      ])).rejects.toThrow('EXIT:1');
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '默认参数简写仅支持单个业务参数'
+      ));
+      expect(callMcp).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
   test('does not leak Commander internals when a tool has no default parameter key', async () => {
     cachedTools = [{
       name: 'list_laws',
@@ -332,5 +595,45 @@ describe('MCP default positional parameter mapping', () => {
       { effectScope: '全国' },
       { json: undefined }
     );
+  });
+});
+
+describe('public command ordering', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  test('lists MCP servers in registry order and document last', () => {
+    const { orderPublicCommands } = require('./cliSetup');
+    const program = new Command();
+    [
+      'document',
+      'init',
+      'tender',
+      'case',
+      'regulation',
+      'executive',
+      'history',
+      'ipr',
+      'operation',
+      'risk',
+      'company'
+    ].forEach((name) => program.command(name));
+
+    orderPublicCommands(program);
+
+    expect(program.commands.map((command) => command.name())).toEqual([
+      'init',
+      'company',
+      'risk',
+      'operation',
+      'ipr',
+      'history',
+      'executive',
+      'regulation',
+      'case',
+      'tender',
+      'document'
+    ]);
   });
 });
